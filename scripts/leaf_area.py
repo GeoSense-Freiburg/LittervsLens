@@ -391,10 +391,10 @@ def calculate_leaf_area_in_images(folder_path, total_area_mm2, output_csv):
 ### USER INPUT
 
 # input image directory (takes all jpg/jpeg/png images of this directory)
-path_dir_in = 'Bilder_Blätter_LAI/LT_Ecosense/'
+path_dir_in = 'data/LT'
 
 # output directory for processing results
-path_dir_out = 'Bilder_Blätter_LAI/LT_processed'
+path_dir_out = 'data/LT_processed'
 
 # physical width of the image in mm. Used to convert mm to pixels.
 width_mm = 980
