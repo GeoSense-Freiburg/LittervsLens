@@ -21,49 +21,6 @@ library(patchwork)
 library(imager)
 ```
 
-## cropping the images
-cropping all the images because they have a black border on top and bottom.
-
-```{r crop images, eval = FALSE}
-# Define the root directory of your images
-input_dir <- "/Users/simon/Documents/Master/Masterarbeit/LAMeasurement/Hemispheric_Photos/LT_Ecosense_Contrast/" # Replace with the folder containing subfolders and images
-output_dir <- "/Users/simon/Documents/Master/Masterarbeit/LAMeasurement/Hemispheric_Photos/LT_Ecosense_Contrast_processed" # Replace with the output folder path
-
-# Create the output directory if it doesn't exist
-if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
-
-# Get all image file paths recursively (case-insensitive for extensions)
-image_files <- list.files(input_dir, pattern = "\\.(jpg|jpeg|png|tif|bmp|JPG|JPEG|PNG|TIF|BMP)$", full.names = TRUE, recursive = TRUE)
-
-# Loop through each image
-for (image_path in image_files) {
-  # Load the image
-  image <- load.image(image_path)
-  
-  # Crop the image (adjusting from y = 220 to y = height - 280)
-  cropped_image <- crop.borders(image, ny = c(220, 280))
-  
-  # Determine the corresponding output path
-  relative_path <- sub(input_dir, "", image_path) # Get the relative path within input_dir
-  output_path <- file.path(output_dir, dirname(relative_path)) # Append it to the output_dir
-  
-  # Create subfolders in the output directory if they don't exist
-  if (!dir.exists(output_path)) dir.create(output_path, recursive = TRUE)
-  
-  # Ensure output file has a lowercase extension
-  output_file <- file.path(output_path, sub("\\.JPG$", ".jpg", basename(image_path)))
-  
-  # Save the cropped image (convert to jpg if needed)
-  tryCatch({
-    save.image(cropped_image, output_file)
-    cat("Processed:", image_path, "->", output_file, "\n")
-  }, error = function(e) {
-    cat("Failed to process:", image_path, "Error:", e$message, "\n")
-  })
-}
-
-```
-
 ## Functions in hemispheR for processing the hemispheric photos
 
 ```{r process function}
@@ -164,7 +121,7 @@ extract_plot <- function(filename) {
 }
 ```
 
-When using the process_directory function it is important to check if the pattern for the filetype of the image is set right (e.g. '.JPG').
+When using the process_directory function it is important to check if the pattern for the filetype of the image is set right - also check capitalization (e.g. '.JPG').
 
 ```{r loop through directories, eval = FALSE}
 # Main function to loop through directories and process images with varying endVZA values
@@ -199,7 +156,7 @@ Finally the function is applied on the directory.
 
 ```{r call functions, eval = FALSE}
 # Call the function with the current working directory
-process_directory('/Users/simon/Documents/Master/Masterarbeit/LAMeasurement/Hemispheric_Photos/LT_Ecosense_Contrast_processed/WoConifer/')
-
-# process_image('/Users/simon/Documents/Master/Masterarbeit/LAMeasurement/Hemispheric_Photos/LT_Ecosense_processed/LT11/LT11_20240920.JPG', 60)
+process_directory('/data/DHP')
+#to check if it works you can test it with only one image with for example VZA Range of 0-60 
+# process_image('data/DHP/LT11/LT11_20240930.jpg', 60)
 ```
