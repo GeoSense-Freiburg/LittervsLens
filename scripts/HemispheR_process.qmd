@@ -1,0 +1,205 @@
+---
+title: "hemispheR processing"
+author: "Simon Lotz"
+format: html
+editor: visual
+---
+
+# hemispheR Process
+
+This document is to showcase the Process of the package hemispheR. This package is for deriving LAI from Digital Hemispheric Photos (DHP)
+
+## Setting up the R Workspace:
+
+```{r load needed libraries, error = FALSE, warning= FALSE}
+library(hemispheR)  # Assuming you have this library installed
+library(stringr)    # For string manipulation (to extract date and plot)
+library(tidyverse)  # For data manipulation
+library(here)       # For easier file path management
+library(ggpmisc)    # For adding R-squared to the plot
+library(patchwork)
+library(imager)
+```
+
+## cropping the images
+cropping all the images because they have a black border on top and bottom.
+
+```{r crop images, eval = FALSE}
+# Define the root directory of your images
+input_dir <- "/Users/simon/Documents/Master/Masterarbeit/LAMeasurement/Hemispheric_Photos/LT_Ecosense_Contrast/" # Replace with the folder containing subfolders and images
+output_dir <- "/Users/simon/Documents/Master/Masterarbeit/LAMeasurement/Hemispheric_Photos/LT_Ecosense_Contrast_processed" # Replace with the output folder path
+
+# Create the output directory if it doesn't exist
+if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
+
+# Get all image file paths recursively (case-insensitive for extensions)
+image_files <- list.files(input_dir, pattern = "\\.(jpg|jpeg|png|tif|bmp|JPG|JPEG|PNG|TIF|BMP)$", full.names = TRUE, recursive = TRUE)
+
+# Loop through each image
+for (image_path in image_files) {
+  # Load the image
+  image <- load.image(image_path)
+  
+  # Crop the image (adjusting from y = 220 to y = height - 280)
+  cropped_image <- crop.borders(image, ny = c(220, 280))
+  
+  # Determine the corresponding output path
+  relative_path <- sub(input_dir, "", image_path) # Get the relative path within input_dir
+  output_path <- file.path(output_dir, dirname(relative_path)) # Append it to the output_dir
+  
+  # Create subfolders in the output directory if they don't exist
+  if (!dir.exists(output_path)) dir.create(output_path, recursive = TRUE)
+  
+  # Ensure output file has a lowercase extension
+  output_file <- file.path(output_path, sub("\\.JPG$", ".jpg", basename(image_path)))
+  
+  # Save the cropped image (convert to jpg if needed)
+  tryCatch({
+    save.image(cropped_image, output_file)
+    cat("Processed:", image_path, "->", output_file, "\n")
+  }, error = function(e) {
+    cat("Failed to process:", image_path, "Error:", e$message, "\n")
+  })
+}
+
+```
+
+## Functions in hemispheR for processing the hemispheric photos
+
+```{r process function}
+# Function to process each image and extract LAI and other results
+process_image <- function(image_path, endVZA) {
+  # Extract file name (without path)
+  file_name <- basename(image_path)
+  
+  # Extract date and plot name from the file name
+  date <- extract_date(file_name)
+  plot <- extract_plot(file_name)
+  
+  # Import fisheye image
+  img <- import_fisheye(image_path,
+                        channel = 1, # use the first if you increased the contrast -> only one channel available
+                        circular = TRUE, # kein Fullframe, da rund
+                        gamma = 2.2,
+                        stretch = FALSE,
+                        display = F,
+                        message = TRUE)
+  
+  # Binarize the image
+  img.bw <- binarize_fisheye(img,
+                             method = 'Otsu',
+                             zonal = FALSE,
+                             manual = NULL,
+                             display = F,
+                             export = FALSE)
+  
+  # OPTIONAL Display the binarized image
+  #plot(img.bw, main = paste("Binarized Image -", plot, date))
+  
+  # Calculate gap fraction
+  gap.frac <- gapfrac_fisheye(img.bw,
+                              maxVZA = 90,
+                              lens = "Sigma-4.5", #check lenses 
+                              startVZA = 0,
+                              endVZA = endVZA, #endVZA as a parameter instead of fixed
+                              nrings = 5,
+                              nseg = 8,
+                              display = T,
+                              message = FALSE)
+  
+  # OPTIONAL Plot gap fraction results
+ # plot(gap.frac, main = paste("Gap Fraction -", plot, date))
+  
+  # Calculate canopy metrics
+  canopy <- canopy_fisheye(gap.frac)
+  
+  # Create a data frame to store all canopy results
+  results <- data.frame(
+    plot = plot,           # New column for plot name (LTXX)
+    date = date,           # New column for date extracted from filename
+    canopy$Le,             # Effective LAI
+    canopy$L,              # Actual LAI
+    canopy$LX,             # Uncorrected LAI 
+    canopy$LXG1,           # LAI with gap correction (method 1)
+    canopy$LXG2,           # LAI with gap correction (method 2)
+    endVZA = endVZA,
+    canopy$DIFN,          # Direct radiation fraction
+    canopy$MTA.ell,        # Mean tilt angle ellipsoid
+    #x = canopy$x,          # Placeholder for other canopy metrics
+    VZA = canopy$VZA,      # View Zenith Angle
+    #rings = canopy$rings,  # Number of rings
+    #azimuths = canopy$azimuths,  # Number of azimuths
+    #mask = canopy$mask,    # Mask details (if used)
+    #lens = canopy$lens,    # Lens model used
+    #channel = canopy$channel,  # Channel used
+    #stretch = canopy$stretch,  # Whether stretch was applied
+    #gamma = canopy$gamma,  # Gamma value used
+    #zonal = canopy$zonal,  # Whether zonal averaging was used
+    method = canopy$method  # Binarization method
+    #thd = canopy$thd        # Threshold for binarization
+  )
+  
+  return(results)
+}
+
+```
+
+The next code snippets shows the functions for extracting the plot ID and the date from the filename.
+
+```{r extracting plot and date function, echo=FALSE, eval = FALSE}
+# Function to extract date from filename (YYYYMMDD)
+extract_date <- function(filename) {
+  # Extract the date portion using regex based on the format 'LT64_YYYYMMDD'
+  date_str <- str_extract(filename, "\\d{8}")
+  # Convert the date string to Date format
+  date <- as.Date(date_str, format = "%Y%m%d")
+  return(date)
+}
+
+# Function to extract plot name from filename (LT + two digits, e.g., LT64)
+extract_plot <- function(filename) {
+  # Extract the plot name (LTXX, e.g., LT64)
+  plot_str <- str_extract(filename, "LT\\d{2}")
+  return(plot_str)
+}
+```
+
+When using the process_directory function it is important to check if the pattern for the filetype of the image is set right (e.g. '.JPG').
+
+```{r loop through directories, eval = FALSE}
+# Main function to loop through directories and process images with varying endVZA values
+process_directory <- function(base_dir) {
+  image_files <- list.files(path = base_dir, pattern = "\\.jpg$", full.names = TRUE, recursive = TRUE)
+  
+  results_list <- list()
+  
+  # Define the range of endVZA values to test
+  endVZA_values <- seq(10, 90, by = 10)
+  
+  # Loop through each image file and each endVZA value
+  for (img_file in image_files) {
+    for (endVZA in endVZA_values) {
+      cat("Processing:", img_file, "with endVZA =", endVZA, "\n")
+      results <- process_image(img_file, endVZA)
+      results_list[[paste(img_file, endVZA, sep = "_")]] <- results
+    }
+  }
+  
+  # Combine all results into a single data frame
+  final_results <- bind_rows(results_list)
+  
+  base_dir_name <- basename(base_dir)
+  
+  # Write all results to a single CSV file with endVZA as an extra column
+  write.csv(final_results, file = here::here(paste0(base_dir_name, "ALL_Angle_Contrast.csv")), row.names = FALSE)
+}
+```
+
+Finally the function is applied on the directory.
+
+```{r call functions, eval = FALSE}
+# Call the function with the current working directory
+process_directory('/Users/simon/Documents/Master/Masterarbeit/LAMeasurement/Hemispheric_Photos/LT_Ecosense_Contrast_processed/WoConifer/')
+
+# process_image('/Users/simon/Documents/Master/Masterarbeit/LAMeasurement/Hemispheric_Photos/LT_Ecosense_processed/LT11/LT11_20240920.JPG', 60)
+```

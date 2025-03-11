@@ -1,0 +1,2239 @@
+---
+title: "Data_Manipulation"
+author: "Simon Lotz"
+format: html
+editor: visual
+---
+
+# Data manipulation and plotting
+
+Run these code snippets for all rawdata (also for the one with enhanced contrast) so the results can be viewed next to eachother. LAI_LT = LAI from hemispherical photos LA_LT = LAI from the Littertraps (leafarea.py script) LAI_LT_2BG = LAI from hemispherical photos with enhanced contrast such as suggested in the
+
+
+```{r setting up R Workspace}
+library(lme4)
+library(MuMIn)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(RColorBrewer)
+library(png)
+library(jpeg)
+library(ggforce)
+library(tidyr)
+library(patchwork)
+library(segmented)
+```
+
+
+## Data manipulation
+
+```{r loading in the data}
+#loading in the data
+LAI_LT <- read.csv('/Users/simon/Documents/Master/Masterarbeit/LAMeasurement/Hemispheric_Photos/Results/LT_Ecosense_processedALL_Angle_new.csv', header = T)
+
+LAI_LT_Hinge <- read.csv('/Users/simon/Documents/Master/Masterarbeit/LAMeasurement/Hemispheric_Photos/Results/LT_Ecosense_processedhinge_Angle.csv', header = T)
+
+LA_LT <- read.csv('/Users/simon/Documents/Master/Masterarbeit/LAMeasurement/Bilder_Blätter_LAI/LT_processed/leaf_area.csv', header = T)
+
+#NO 2BG Process done yet
+#LAI_LT_2BG <- read.csv('/Users/simon/Documents/Master/Masterarbeit/aktuelles Thema/LT_Ecosense_Contrastall_NEW_2BG.csv', header = T)
+```
+
+join the Hinge data to the big LAI Dataset
+```{r join Hinge}
+LAI_LT$canopy.MTA.ell <- NULL
+LAI_LT$VZA <- NULL
+LAI_LT$method <- NULL
+LAI_LT_Hinge$endVZA <- 'Hinge'
+LAI_LT <- rbind(LAI_LT, LAI_LT_Hinge)
+```
+
+
+```{r apply clumping indices correctly}
+LAI_LT <- LAI_LT %>%
+  mutate(LAI.LX = canopy.Le/canopy.LX) %>%
+  mutate(LAI.LXG1 = canopy.Le/canopy.LXG1) %>%
+  mutate(LAI.LXG2 = canopy.Le/canopy.LXG2)
+```
+
+Date formatting, column renaming and LAI calculation for the Littertraps
+```{r date formatting and column renaming}
+# Ensure the date column is in Date format
+LAI_LT$date <- as.Date(LAI_LT$date)
+
+#LAI_LT_2BG$date <- as.Date(LAI_LT_2BG$date)
+# Assuming LA_LT$Date is numeric
+LA_LT$Date <- as.character(LA_LT$Date)  # Convert to character
+
+#merge values if there are 2 photos for one plot
+# Summing up 'value' for rows with the same 'plot' and 'date'
+LA_LT <- LA_LT %>%
+  group_by(Plot, Date) %>%
+  summarize(Leaf.Area..cm.. = sum(Leaf.Area..cm..), .groups = "drop")
+
+LA_LT$LAI <- LA_LT$Leaf.Area..cm../2400
+LA_LT <- LA_LT %>%
+  rename(leaf_area_cm = Leaf.Area..cm..)
+# Convert to date using the specified format
+LA_LT$Date <- as.Date(LA_LT$Date, format = "%y%m%d")
+LA_LT <- as_tibble(LA_LT)
+
+names(LA_LT) <- tolower(names(LA_LT))    
+```
+
+Matching the LT data with the hemispheR data. This is done because the LT data always shows the difference in LAI for one timestep and not the absolute LAI. This is done for both ways: calculating the absolute value from the LT data and calculating the differences for each timestep for the hemispheR data.
+
+```{r merging the two datasets}
+# Merge the two datasets
+merged_data_all <- merge(LAI_LT, LA_LT , by = c("plot", "date"), all = T)
+```
+
+### calculating the absolute LAI
+Furthermore also changing the endVZA to factor because of the 'Hinge' angle is a character.
+```{r calculating absolute LAI}
+merged_data_cumulative <- merged_data_all %>%
+  group_by(plot, endVZA) %>%
+  mutate(
+    # Shift the 'lai' values one timestep backward (i.e., add the lai from the next timestep)
+    shifted_lai = lead(lai, order_by = date),  
+    
+    # Replace NA with 0 (the first timestep should start with the first lai value)
+    shifted_lai = replace_na(shifted_lai, 0),
+    
+    # Compute cumulative sum of shifted 'lai' values (starting from 0 for the last timestep)
+    absolute_lai = rev(cumsum(rev(shifted_lai)))
+  ) %>%
+  ungroup()
+
+merged_data_cumulative$endVZA <- as.factor(merged_data_cumulative$endVZA)
+```
+
+```{r get rid of unnecessary columns}
+merged_data_cumulative$canopy.DIFN <- NULL
+merged_data_cumulative$leaf_area_cm <- NULL
+merged_data_cumulative$lai <- NULL
+merged_data_cumulative$shifted_lai <- NULL
+```
+```{r add leaf fall states}
+# Define the time spans for each phase
+begin_start <- as.Date("2024-09-20")  # Replace with the actual start date of "begin"
+begin_end <- as.Date("2024-10-15")    # Replace with the actual end date of "begin"
+
+peak_start <- as.Date("2024-10-16")   # Replace with the actual start date of "peak"
+peak_end <- as.Date("2024-11-12")     # Replace with the actual end date of "peak"
+
+end_start <- as.Date("2024-11-13")    # Replace with the actual start date of "end"
+end_end <- as.Date("2024-12-16")      # Replace with the actual end date of "end"
+
+# Add the `phase` column based on the defined timespans
+merged_data_cumulative <- merged_data_cumulative %>%
+  mutate(
+    phase = case_when(
+      date >= begin_start & date <= begin_end ~ "onset",  # Begin phase
+      date >= peak_start & date <= peak_end ~ "peak",    # Peak phase
+      date >= end_start & date <= end_end ~ "end",       # End phase
+      TRUE ~ "other"                                     # If outside defined timespans
+    )
+  )
+
+merged_data_cumulative_woconifer_phase <- merged_data_cumulative %>%
+  filter(plot %in% plot_ids) %>%
+  filter(phase == c("onset", "peak"))
+```
+
+```{r cumulative wo conifer}
+merged_data_cumulative_ <- merged_data_cumulative %>%
+  filter(phase == c("onset", "peak"))
+merged_data_cumulative_woconifer <- merged_data_cumulative %>%
+  filter(plot %in% plot_ids)
+```
+
+
+##RESULTS
+
+### Plots
+
+#### LEAF ANGLE TRY
+
+
+```{r leaf fall states clumping}
+# Calculate the mean of canopy.LXG2 for each date
+mean_data <- merged_data_cumulative %>%
+  group_by(date) %>%
+  summarise(mean_canopy = mean(canopy.LXG2, na.rm = TRUE))
+# Create a scatter plot
+ggplot() +
+    # Plot individual points
+  geom_point(data = merged_data_cumulative, aes(x = date, y = canopy.LXG2), color = "gray", alpha = 0.6) +
+  # Plot the mean values as points
+  geom_point(data = mean_data, aes(x = date, y = mean_canopy), color = "red", size = 3) +
+  # Connect the mean values with a line
+  geom_line(data = mean_data, aes(x = date, y = mean_canopy), color = "blue", size = 1) +
+  geom_point(color = "red") +          # Add points for each date
+  labs(
+    title = "Canopy.LXG1 Over Time",
+    x = "Date",
+    y = "Canopy.LXG1"
+  ) +
+  theme_minimal()
+```
+
+```{r showcase leaf fall states with breakpoints}
+# Load necessary libraries
+library(ggplot2)
+library(segmented)
+library(dplyr)
+
+# Filter data for endVZA == 60 and sort by date
+plot_data <- merged_data_cumulative %>%
+  filter(endVZA == 60) %>%
+  arrange(date)
+
+# Convert date to numeric (number of days since the first date)
+plot_data$date_numeric <- as.numeric(plot_data$date - min(plot_data$date))
+
+# Fit the initial linear model
+lm_model <- lm(absolute_lai ~ date_numeric, data = plot_data)
+
+# Check the range of the numeric date values to adjust psi
+range(plot_data$date_numeric)
+
+# Fit the segmented regression model using adjusted psi values based on the numeric range
+# For example, if the range of numeric dates is between 0 and 1000, adjust psi within this range
+seg_model <- segmented(lm_model, seg.Z = ~date_numeric, psi = c(35, 73))  # Adjust these based on your data range
+psi <- seg_model$psi
+# Generate the predicted values from the segmented model
+plot_data$segmented_fit <- predict(seg_model, newdata = plot_data)
+# Extract breakpoints (from Est. column of segmented model)
+breakpoints_numeric <- seg_model$psi[, 2]
+
+# Identify the origin (the first date in your dataset)
+origin_date <- min(plot_data$date)
+
+# Convert numeric breakpoints to Date format
+breakpoints_date <- origin_date + breakpoints_numeric
+
+# Create the plot with breakpoints
+ggplot(data = plot_data, aes(x = date, y = absolute_lai)) +
+  geom_point(color = "blue") +  # Plot the absolute LAI points
+  geom_line(aes(y = segmented_fit), color = "red") +  # Add segmented regression line
+  geom_vline(xintercept = breakpoints_date, 
+             color = "black", linetype = "dashed") +  # Mark breakpoints
+  labs(
+    title = "Absolute LAI over Time with Breakpoints",
+    x = "Date",
+    y = "Absolute LAI"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotate date labels for better visibility
+
+```
+
+
+
+```{r leaf state mixed model phase seperately}
+
+# Initialize a dataframe to store R² results for phases
+r2_results_phases <- data.frame(
+  phase = character(),
+  method = character(),
+  R2_type = character(),
+  R2_value = numeric(),
+  dataset = character()
+)
+data_phase_filtered <- NULL
+# Phases, methods, and datasets
+phases <- c("begin", "peak", "end")
+methods <- c("canopy.L", "canopy.Le", "LAI.LXG1", "LAI.LXG2")
+
+# Loop through each phase and method
+for (current_phase in phases) {
+  for (method in methods) {
+    # Filter for each phase and method
+    data_phase_filtered <- merged_data_cumulative %>%
+      filter(phase == current_phase, plot %in% plot_ids) %>%
+      mutate(phase = as.factor(phase))
+    
+    if (nrow(data_phase_filtered) > 0) {
+      # Fit mixed-effects model for filtered dataset
+      model_filtered <- lmer(absolute_lai ~ get(method) + (1 | plot), data = data_phase_filtered)
+      r2_values_filtered <- r.squaredGLMM(model_filtered)
+      
+      # Append Marginal and Conditional R² for filtered dataset
+      r2_results_phases <- rbind(r2_results_phases,
+                                 data.frame(
+                                   phase = current_phase,
+                                   method = method,
+                                   R2_type = "Marginal",
+                                   R2_value = r2_values_filtered[1],
+                                   dataset = "wo conifer"
+                                 ),
+                                 data.frame(
+                                   phase = current_phase,
+                                   method = method,
+                                   R2_type = "Conditional",
+                                   R2_value = r2_values_filtered[2],
+                                   dataset = "wo conifer"
+                                 ))
+    }
+    
+    # Repeat for the unfiltered dataset
+    data_phase_unfiltered <- merged_data_cumulative %>%
+      filter(phase == current_phase) %>%
+      mutate(phase = as.factor(phase))
+    
+    if (nrow(data_phase_unfiltered) > 0) {
+      # Fit mixed-effects model for unfiltered dataset
+      model_unfiltered <- lmer(absolute_lai ~ get(method) +  (1 | plot), data = data_phase_unfiltered)
+      r2_values_unfiltered <- r.squaredGLMM(model_unfiltered)
+      
+      # Append Marginal and Conditional R² for unfiltered dataset
+      r2_results_phases <- rbind(r2_results_phases,
+                                 data.frame(
+                                   phase = current_phase,
+                                   method = method,
+                                   R2_type = "Marginal",
+                                   R2_value = r2_values_unfiltered[1],
+                                   dataset = "all plots"
+                                 ),
+                                 data.frame(
+                                   phase = current_phase,
+                                   method = method,
+                                   R2_type = "Conditional",
+                                   R2_value = r2_values_unfiltered[2],
+                                   dataset = "all plots"
+                                 ))
+    }
+  }
+}
+
+# Plot the R² values across phases
+ggplot(r2_results_phases, 
+       aes(x = phase, y = R2_value, color = method, shape = dataset, group = interaction(method, dataset))) +
+  geom_point(size = 3) +
+  geom_line(size = 1) +
+  geom_text(aes(label = round(R2_value, 2)), vjust = -0.5, size = 3) +  # Annotate R² values
+  facet_wrap(~R2_type, scales = "free_y") +  # Separate panels for Marginal and Conditional R²
+  labs(
+    title = "Comparison of R² Values Across Phases",
+    x = "Phase",
+    y = "R² Value",
+    color = "Method",
+    shape = "Dataset"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "bottom"
+  )
+
+```
+
+```{r leaft state mixed model included}
+# Initialize a dataframe to store R² results for phases
+r2_results_phases <- data.frame(
+  method = character(),
+  R2_type = character(),
+  R2_value = numeric(),
+  dataset = character()
+)
+data_phase_filtered <- NULL
+data_angle_unfiltered <- NULL
+# Phases, methods, and datasets
+methods <- c("canopy.L", "canopy.Le", "LAI.LXG1", "LAI.LXG2")
+
+# Loop through each phase and method
+  for (method in methods) {
+    # Filter for each phase and method
+    data_phase_filtered <- merged_data_cumulative
+    
+    if (nrow(data_phase_filtered) > 0) {
+      # Fit mixed-effects model for filtered dataset
+      model_filtered <- lmer(absolute_lai ~ get(method) + phase + (1 | plot), data = data_phase_filtered)
+      r2_values_filtered <- r.squaredGLMM(model_filtered)
+      
+      # Append Marginal and Conditional R² for filtered dataset
+      r2_results_phases <- rbind(r2_results_phases,
+                                 data.frame(
+                                   method = method,
+                                   R2_type = "Marginal",
+                                   R2_value = r2_values_filtered[1],
+                                   dataset = "wo conifer"
+                                 ),
+                                 data.frame(
+                                   method = method,
+                                   R2_type = "Conditional",
+                                   R2_value = r2_values_filtered[2],
+                                   dataset = "wo conifer"
+                                 ))
+    }
+    
+    # Repeat for the unfiltered dataset
+    data_phase_unfiltered <- merged_data_cumulative
+    
+    if (nrow(data_phase_unfiltered) > 0) {
+      # Fit mixed-effects model for unfiltered dataset
+      model_unfiltered <- lmer(absolute_lai ~ get(method) + phase + (1 | plot), data = data_phase_unfiltered)
+      r2_values_unfiltered <- r.squaredGLMM(model_unfiltered)
+      
+      # Append Marginal and Conditional R² for unfiltered dataset
+      r2_results_phases <- rbind(r2_results_phases,
+                                 data.frame(
+                                   method = method,
+                                   R2_type = "Marginal",
+                                   R2_value = r2_values_unfiltered[1],
+                                   dataset = "all plots"
+                                 ),
+                                 data.frame(
+                                   method = method,
+                                   R2_type = "Conditional",
+                                   R2_value = r2_values_unfiltered[2],
+                                   dataset = "all plots"
+                                 ))
+    }
+  }
+
+
+# Plot the R² values across phases
+ggplot(r2_results_phases, 
+       aes(x = phase, y = R2_value, color = method, shape = dataset, group = interaction(method, dataset))) +
+  geom_point(size = 3) +
+  geom_line(size = 1) +
+  geom_text(aes(label = round(R2_value, 2)), vjust = -0.5, size = 3) +  # Annotate R² values
+  facet_wrap(~R2_type, scales = "free_y") +  # Separate panels for Marginal and Conditional R²
+  labs(
+    title = "Comparison of R² Values Across Phases",
+    x = "Phase",
+    y = "R² Value",
+    color = "Method",
+    shape = "Dataset"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "bottom"
+  )
+```
+
+```{r exclude end}
+merged_data_cumulative_ <- merged_data_cumulative %>%
+  filter(phase != 'end')
+```
+
+
+
+#### Zenith angles example:
+```{r showcase}
+# Parameters for the fisheye image
+xc <- 2592       # x-coordinate of the center
+yc <- 1478       # y-coordinate of the center
+radius <- 1476   # Radius of the fisheye circle #1726
+
+# Zenith angles to visualize
+zenith_angles <- c(10, 20, 30, 40, 50, 60, 70, 80, 90)
+
+# Calculate the radii corresponding to zenith angles
+zenith_radii <- sapply(zenith_angles, function(angle) {
+  radius * sin(angle * pi / 180)
+})
+
+# Load the image
+fisheye_image <- readJPEG('/Users/simon/Documents/Master/Masterarbeit/LAMeasurement/Hemispheric_Photos/LT_Ecosense_processed/LT11/LT11_20241112.JPG') # Replace with your image file
+
+# Convert image to a ggplot-friendly format
+image_grob <- grid::rasterGrob(fisheye_image, width = unit(1, "npc"), height = unit(1, "npc"))
+
+# Create a data frame for the rings
+rings_data <- data.frame(
+  x = xc,
+  y = yc,
+  radius = zenith_radii,
+  angle = zenith_angles
+)
+
+# Plot the image with the rings
+ggplot() +
+  annotation_custom(image_grob, xmin = 0, xmax = 2 * xc, ymin = 0, ymax = 2 * yc) +
+  geom_circle(data = rings_data, aes(x0 = x, y0 = y, r = radius, color = factor(angle)), size = 1) +
+  scale_color_manual(
+    values = c("red", "blue", "green", "purple", "orange", "yellow", "cyan", "magenta", "brown"), 
+    name = "Zenith Angle"
+  ) +
+  coord_fixed() + # Ensure circular proportions
+  theme_void() +  # Remove axis labels and gridlines
+  ggtitle("Showcase of the area used for LAI calculation in hemispheR at the 
+          respective zenith angles.")+
+  theme(plot.title.position = "plot",
+        plot.title = element_text(hjust = 0))
+
+```
+
+#### Absolute overview all plots:
+
+```{r all plots all angles ABSOLUTE}
+
+highlight_plot_ids <- c("LT12", "LT21", "LT22", "LT31", "LT32", "LT42", "LT43", "LT54", "LT64")
+
+# Create a list of plots
+plots <- list()
+
+plot_ids <- unique(merged_data_cumulative$plot)
+
+for (plot_id in plot_ids) {
+  plot_data <- merged_data_cumulative %>%
+    filter(plot == plot_id)
+  
+  p <- ggplot(plot_data, aes(x = date)) +
+    # Plot Absolute LAI (LT True LAI) as a single line, no color by endVZA
+    geom_line(aes(y = absolute_lai, color = "Absolute LAI"), size = 1, linetype = "solid", 
+              show.legend = TRUE) +  # Adding the legend entry for "Absolute LAI"
+    # Plot LAI for different endVZA values, each with a different color
+    geom_line(aes(y = LAI.LXG1, color = as.factor(endVZA)), size = 1, linetype = "dashed", 
+              show.legend = TRUE) +  # Adding the legend entries for "endVZA"
+    labs(title = paste("Absolute LAI Over Time - Plot", plot_id), 
+         color = "Line Type") +  # Title and color legend
+    scale_color_manual(values = c("Absolute LAI" = "black", 
+                                 "20" = "#1b9e77", "30" = "#d95f02", "40" = "#7570b3", 
+                                 "50" = "#e7298a", "60" = "#66a61e"), 
+                       name = "Line Type / Zenith Angle") +  # Colors for absolute_lai and different zenith angles
+    theme_minimal() +
+    theme(legend.position = "bottom", legend.title = element_text(size = 10), 
+          legend.text = element_text(size = 8))  # Customize legend appearance
+  
+  # Add red border to specific plots (highlighted plots)
+  if (plot_id %in% highlight_plot_ids) {
+    p <- p + theme(plot.margin = margin(10, 10, 10, 10)) + 
+      theme(plot.background = element_rect(color = "red", size = 2))
+  }
+  
+  plots[[plot_id]] <- p
+}
+
+# Combine the plots using patchwork
+big_plot <- wrap_plots(plots, ncol = 3, nrow = 8)
+
+# Save the combined plot
+ggsave("/Users/simon/Downloads/all_plots_LXG1.png", plot = big_plot, width = 20, height = 25, dpi = 300)
+
+```
+
+
+![](images/step_5_highlighted_plots.png)
+
+#### LT LAI vs LAI hemispheR
+All data (all angles for canopy.Le) against eachother
+
+```{r big plot}
+# Load necessary libraries
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+
+# Define a function to create the plot for each method
+create_plot <- function(plot_data, x_var, y_var, method_name) {
+  # Compute the range of x (absolute_lai) and y (method variable)
+  x_range <- range(plot_data$absolute_lai, na.rm = TRUE)
+  y_range <- range(plot_data[[y_var]], na.rm = TRUE)
+
+  # Determine the maximum range to make the plot square
+  max_range <- max(c(x_range, y_range))
+
+  # Adjust xlim and ylim to fit the data and make the plot quadratic
+  xlim_range <- c(0, max_range)
+  ylim_range <- c(0, max_range)
+
+  # Fit the linear model to calculate the slope
+  lm_model <- lm(as.formula(paste(y_var, "~ absolute_lai")), data = plot_data)
+  slope <- coef(lm_model)["absolute_lai"]
+
+  # Create the plot
+  p <- ggplot(data = plot_data, aes(x = absolute_lai, y = .data[[y_var]], color = as.factor(phase))) +
+    geom_point() +
+    geom_smooth(method = "lm", color = "blue", se = TRUE) +  # Add regression line with confidence interval
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "black") +  # 1:1 reference line
+    coord_fixed(ratio = 1) +  # Set the aspect ratio to 1:1
+    xlim(xlim_range) +
+    ylim(ylim_range) +
+    labs(
+      title = paste("HemispheR LAI", method_name, "vs LT LAI"),
+      x = "LT LAI",
+      y = "HemispheR LAI"
+    ) +
+    annotate("text", x = max_range * 0.7, y = max_range * 0.1,
+             label = paste("Slope =", round(slope, 2)), color = "red", size = 5) +  # Add slope as text
+    scale_color_brewer(palette = "Set1") +  # Use Brewer palette
+    theme_minimal()
+
+  return(p)
+}
+
+# Filter the data for endVZA = 60 degrees
+plot_data <- merged_data_cumulative %>%
+  filter(endVZA == 20) %>%
+  filter(plot %in% plot_ids)
+
+# Create the individual plots for each method
+plot1 <- create_plot(plot_data, "absolute_lai", "canopy.L", "canopy.L")
+plot2 <- create_plot(plot_data, "absolute_lai", "canopy.Le", "canopy.Le")
+plot3 <- create_plot(plot_data, "absolute_lai", "LAI.LXG1", "LAI.LXG1")
+plot4 <- create_plot(plot_data, "absolute_lai", "LAI.LXG2", "LAI.LXG2")
+
+# Combine the plots into a single plot using patchwork
+final_plot <- plot1 + plot2 + plot3 + plot4 +
+  plot_layout(ncol = 2)  # Arrange the plots in a 2x2 grid
+
+# Display the final combined plot
+print(final_plot)
+
+
+```
+
+```{r slope and absolute Error of LTvsDHP}
+# Define the methods and angles
+methods_to_plot <- c("canopy.L", "canopy.Le", "LAI.LXG1", "LAI.LXG2")
+vza_angles <- unique(merged_data_cumulative$endVZA)
+
+# Initialize an empty dataframe to store results
+slope_error_data <- data.frame()
+
+# Loop through each VZA angle
+for (vza in vza_angles) {
+  # Filter data for the current VZA and plot IDs
+  data_vza <- merged_data_cumulative %>%
+    filter(endVZA == vza, plot %in% plot_ids)
+  
+  # Loop through each method
+  for (method in methods_to_plot) {
+    # Fit linear model: HemispheR LAI ~ Absolute LAI
+    lm_model <- lm(data_vza[[method]] ~ data_vza$absolute_lai)
+    
+    # Extract slope
+    slope_value <- coef(lm_model)[2]  # Second coefficient (absolute LAI)
+    
+    # Compute mean absolute error (MAE)
+    abs_error_value <- mean(abs(data_vza[[method]] - data_vza$absolute_lai), na.rm = TRUE)
+    
+    # Store the results
+    slope_error_data <- rbind(slope_error_data, data.frame(
+      endVZA = vza,
+      method = method,
+      abs_error = abs_error_value,
+      slope = slope_value
+    ))
+  }
+}
+
+# Reshape data for plotting
+slope_error_data_long <- slope_error_data %>%
+  pivot_longer(cols = c(abs_error, slope), names_to = "metric", values_to = "value")
+
+# Create the plot
+p <- ggplot(slope_error_data_long, aes(x = endVZA, y = value, color = method, group = interaction(method, metric))) +
+  geom_point(aes(shape = metric), size = 3) +  # Different symbols for error & slope
+  geom_line(aes(linetype = metric), linewidth = 1) +  # Lines for trends
+  scale_shape_manual(name = "Metric", values = c("abs_error" = 16, "slope" = 17)) +
+  scale_linetype_manual(name = "Metric", values = c("abs_error" = "solid", "slope" = "dashed")) +
+  labs(title = "Absolute Error & Slope across Zenith Angles",
+       x = "Zenith Angle (VZA)",
+       y = "Value",
+       color = "Method") +
+  theme_minimal()
+
+# Display plot
+print(p)
+
+```
+
+```{r Slope, Error and R2}
+# Define the methods and angles
+methods_to_plot <- c("canopy.L", "canopy.Le", "LAI.LXG1", "LAI.LXG2")
+vza_angles <- c(10, 20, 30, 40, 50, 60, 70, 80, 90)
+
+# Initialize an empty dataframe to store results
+slope_error_data <- data.frame()
+
+# Loop through each VZA angle
+for (vza in vza_angles) {
+  # Filter data for the current VZA and plot IDs
+  data_vza <- merged_data_cumulative %>%
+    filter(endVZA == vza, plot %in% plot_ids)
+  
+  # Loop through each method
+  for (method in methods_to_plot) {
+    # Fit linear model: HemispheR LAI ~ Absolute LAI
+    lm_model <- lm(data_vza[[method]] ~ data_vza$absolute_lai)
+    
+    # Extract slope
+    slope_value <- coef(lm_model)[2]  # Second coefficient (absolute LAI)
+    
+    # Compute mean absolute error (MAE)
+    abs_error_value <- mean(abs(data_vza[[method]] - data_vza$absolute_lai), na.rm = TRUE)
+    
+    # Compute R²
+    r2_value <- summary(lm_model)$r.squared
+    
+    # Store the results
+    slope_error_data <- rbind(slope_error_data, data.frame(
+      endVZA = vza,
+      method = method,
+      abs_error = abs_error_value,
+      slope = slope_value,
+      r_squared = r2_value
+    ))
+  }
+}
+
+# Reshape data for plotting
+slope_error_data_long <- slope_error_data %>%
+  pivot_longer(cols = c(abs_error, slope, r_squared), 
+               names_to = "metric", values_to = "value") %>%
+  mutate(metric = factor(metric, 
+                         levels = c("abs_error", "slope", "r_squared"),
+                         labels = c("a) Absolute Error", "b) Slope", "c) R²")))
+
+# Create the combined plot with facets
+p <- ggplot(slope_error_data_long, aes(x = endVZA, y = value, color = method, group = method)) +
+  geom_point(size = 1.5) +
+  geom_line(linewidth = 1) +
+  facet_wrap(~metric, scales = "free_y") +  # Create separate panels with labels
+  labs(title = "Absolute Error, Slope, and R² across Zenith Angles",
+       x = "Zenith Angle (VZA)",
+       y = "Value",
+       color = "Method") +
+  scale_x_continuous(breaks = vza_angles) +  # Set x-axis breaks to VZA angles
+    scale_color_manual(name = "Method", 
+                     values = c("canopy.L" = "#1F77B4",   # Cyan
+                   "canopy.Le" = "#2CA02C",  # Magenta
+                   "LAI.LXG1" = "#D62728",  # Greenish
+                   "LAI.LXG2" = "#FF7F0E"),  # Dark Teal (optional),
+                     labels = c("canopy.Le" = "Effective LAI",
+                                "canopy.L" = "Clumping LX", 
+                                "LAI.LXG1" = "Clumping LXG1", 
+                                "LAI.LXG2" = "Clumping LXG2")) +
+  theme_minimal() +
+  theme(strip.text = element_text(size = 14, face = "bold"))  # Make facet labels bold
+
+# Display the plot
+print(p)
+```
+
+```{r slope wo end}
+# Define the methods and angles
+methods_to_plot <- c("canopy.L", "canopy.Le", "LAI.LXG1", "LAI.LXG2")
+vza_angles <- unique(merged_data_cumulative$endVZA)
+
+# Initialize an empty dataframe to store results
+slope_error_data <- data.frame()
+
+# Loop through each VZA angle
+for (vza in vza_angles) {
+  # Filter data for the current VZA and plot IDs
+  data_vza <- merged_data_cumulative %>%
+    filter(endVZA == vza, plot %in% plot_ids)
+  
+  # Loop through each method
+  for (method in methods_to_plot) {
+    # Fit linear model: HemispheR LAI ~ Absolute LAI
+    lm_model <- lm(data_vza[[method]] ~ data_vza$absolute_lai)
+    
+    # Extract slope
+    slope_value <- coef(lm_model)[2]  # Second coefficient (absolute LAI)
+    
+    # Compute mean absolute error (MAE)
+    abs_error_value <- mean(abs(data_vza[[method]] - data_vza$absolute_lai), na.rm = TRUE)
+    
+    # Store the results
+    slope_error_data <- rbind(slope_error_data, data.frame(
+      endVZA = vza,
+      method = method,
+      abs_error = abs_error_value,
+      slope = slope_value
+    ))
+  }
+}
+
+# Reshape data for plotting
+slope_error_data_long <- slope_error_data %>%
+  pivot_longer(cols = c(abs_error, slope), names_to = "metric", values_to = "value")
+
+# Create the plot
+p <- ggplot(slope_error_data_long, aes(x = endVZA, y = value, color = method, group = interaction(method, metric))) +
+  geom_point(aes(shape = metric), size = 3) +  # Different symbols for error & slope
+  geom_line(aes(linetype = metric), linewidth = 1) +  # Lines for trends
+  scale_shape_manual(name = "Metric", values = c("abs_error" = 16, "slope" = 17)) +
+  scale_linetype_manual(name = "Metric", values = c("abs_error" = "solid", "slope" = "dashed")) +
+  labs(title = "Absolute Error & Slope across Zenith Angles wo end",
+       x = "Zenith Angle (VZA)",
+       y = "Value",
+       color = "Method") +
+  theme_minimal()
+
+# Display plot
+print(p)
+```
+
+#### Mixed effect Model plot
+
+##### over- or understimation: Residuals plot for best combination
+
+```{r Residuals}
+library(lme4)
+library(ggplot2)
+library(dplyr)
+
+# Define methods
+methods <- c("canopy.L", "canopy.Le", "LAI.LXG1", "LAI.LXG2")
+
+# Filter data for endVZA = 60 degrees
+data_angle_60 <- merged_data_cumulative %>% filter(endVZA == 60)
+
+# Initialize dataframe for predictions
+predictions_df <- data.frame(method = character(), actual = numeric(), predicted = numeric())
+
+# Loop through each method
+for (method in methods) {
+  # Fit mixed-effects model
+  model <- lmer(as.formula(paste("absolute_lai ~", method, "+ (1 | plot)")), data = data_angle_60)
+  
+  # Get predictions
+  predicted_values <- predict(model, re.form = NULL)
+  actual_values <- data_angle_60$absolute_lai
+  
+  # Store in dataframe
+  predictions_df <- rbind(predictions_df, 
+                          data.frame(method = method, actual = actual_values, predicted = predicted_values))
+}
+
+# Create Predicted vs. Actual plot
+ggplot(predictions_df, aes(x = actual, y = predicted, color = method, linetype = method)) +
+  geom_point(alpha = 0.7, size =1) +  # Scatter points
+  geom_smooth(method = "lm", se = T, alpha = 0.2, size = 0.5) +  # Regression trend for each method
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "black") +  # 1:1 reference line
+  labs(title = "Predicted vs. Actual LAI (Zenith Angle = 60°)",
+       x = "Actual LAI",
+       y = "Predicted LAI",
+       color = "Method") +
+  theme_minimal(base_size = 14)
+
+```
+
+```{r hemispheR vs LT}
+methods <- c("canopy.L", "canopy.Le", "LAI.LXG1", "LAI.LXG2")
+
+# Filter data for endVZA = 60 degrees
+data_angle_60 <- merged_data_cumulative %>% 
+  filter(endVZA == 60) %>%
+  filter(plot %in% plot_ids) 
+
+# Convert data from wide to long format (for ggplot)
+data_long <- data_angle_60 %>%
+  dplyr::select(plot, absolute_lai, all_of(methods)) %>%
+  pivot_longer(cols = all_of(methods), names_to = "method", values_to = "lai_value")
+
+# Create scatter plot of method LAI vs. absolute LAI
+ggplot(data_long, aes(x = absolute_lai, y = lai_value, color = method)) +
+  geom_point(alpha = 0.7) +  # Scatter points
+  geom_smooth(method = "lm", se = TRUE, alpha = 0.2) +  # Regression trend + Confidence interval
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "black") +  # 1:1 reference line
+  labs(title = "Method LAI vs. Absolute LAI (Zenith Angle = 60°)",
+       x = "Absolute LAI",
+       y = "Method LAI",
+       color = "Method") +
+  theme_minimal(base_size = 14)
+
+```
+
+```{r}
+library(dplyr)
+
+# Define methods
+methods <- c("canopy.L", "canopy.Le", "LAI.LXG1", "LAI.LXG2", "LAI.LXG12")
+
+# Convert data from wide to long format
+data_long_filtered <- data_angle_60 %>%
+  select(plot, absolute_lai, all_of(methods)) %>%
+  pivot_longer(cols = all_of(methods), names_to = "method", values_to = "lai_value")
+
+# Calculate slope and intercept for each method
+regression_results <- data_long_filtered %>%
+  group_by(method) %>%
+  do({
+    model <- lm(lai_value ~ absolute_lai, data = .)
+    data.frame(slope = coef(model)[2], intercept = coef(model)[1])
+  })
+
+# Print the regression results
+print(regression_results)
+
+
+```
+
+##### AIC
+
+```{r AIC}
+# Initialize an empty dataframe to store results
+method_comparison <- data.frame(
+  endVZA = character(),
+  method = character(),
+  fixed_effect = numeric(),
+  fixed_effect_se = numeric(),
+  AIC = numeric()
+)
+
+# Define the methods to compare
+methods <- c("canopy.L", "canopy.Le", "LAI.LXG1", "LAI.LXG2")
+
+# Loop through each zenith angle and method
+for (angle in c(10, 20, 30, 40, 50, 60, 70, 80, 90, 'Hinge')) {
+  for (method in methods) {
+    # Filter data for current endVZA
+    data_angle <- merged_data_cumulative_woconifer %>% filter(endVZA == angle)
+    
+    # Fit mixed-effects model
+    model <- lmer(as.formula(paste("absolute_lai ~", method, "+ (1 | plot)")), data = data_angle)
+    
+    # Extract fixed effect and AIC
+    fixed_effect_value <- fixef(model)[method]
+    fixed_effect_se <- sqrt(diag(vcov(model)))[method]
+    model_aic <- AIC(model)
+    
+    # Append results to the dataframe
+    method_comparison <- rbind(method_comparison, 
+                               data.frame(
+                                 endVZA = angle,
+                                 method = method,
+                                 fixed_effect = fixed_effect_value,
+                                 fixed_effect_se = fixed_effect_se,
+                                 AIC = model_aic
+                               ))
+  }
+}
+
+ggplot(method_comparison, aes(x = factor(endVZA), y = fixed_effect, color = method, group = method)) +
+  geom_point(size = 3) +
+  geom_line(size = 1) +
+  geom_errorbar(aes(ymin = fixed_effect - fixed_effect_se, ymax = fixed_effect + fixed_effect_se), width = 0.2) +
+  labs(
+    title = "Fixed Effect Comparison Across Methods",
+    x = "Zenith Angle (endVZA)",
+    y = "Fixed Effect Coefficient",
+    color = "Method"
+  ) +
+  theme_minimal(base_size = 14)
+
+
+ggplot(method_comparison, aes(x = factor(endVZA), y = AIC, color = method, group = method)) +
+  geom_point(size = 3) +
+  geom_line(size = 1) +
+  labs(
+    title = "AIC Comparison Across Methods",
+    x = "Zenith Angle (endVZA)",
+    y = "AIC",
+    color = "Method"
+  ) +
+  theme_minimal(base_size = 14)
+
+
+```
+
+```{r AIC wo end}
+# Initialize an empty dataframe to store results
+method_comparison <- data.frame(
+  endVZA = character(),
+  method = character(),
+  fixed_effect = numeric(),
+  fixed_effect_se = numeric(),
+  AIC = numeric()
+)
+
+# Define the methods to compare
+methods <- c("canopy.L", "canopy.Le", "LAI.LXG1", "LAI.LXG2")
+
+# Loop through each zenith angle and method
+for (angle in c(10, 20, 30, 40, 50, 60, 70, 80, 90, 'Hinge')) {
+  for (method in methods) {
+    # Filter data for current endVZA
+    data_angle <- merged_data_cumulative_woconifer_phase %>% filter(endVZA == angle)
+    
+    # Fit mixed-effects model
+    model <- lmer(as.formula(paste("absolute_lai ~", method, "+ (1 | plot)")), data = data_angle)
+    
+    # Extract fixed effect and AIC
+    fixed_effect_value <- fixef(model)[method]
+    fixed_effect_se <- sqrt(diag(vcov(model)))[method]
+    model_aic <- AIC(model)
+    
+    # Append results to the dataframe
+    method_comparison <- rbind(method_comparison, 
+                               data.frame(
+                                 endVZA = angle,
+                                 method = method,
+                                 fixed_effect = fixed_effect_value,
+                                 fixed_effect_se = fixed_effect_se,
+                                 AIC = model_aic
+                               ))
+  }
+}
+
+ggplot(method_comparison, aes(x = factor(endVZA), y = fixed_effect, color = method, group = method)) +
+  geom_point(size = 3) +
+  geom_line(size = 1) +
+  geom_errorbar(aes(ymin = fixed_effect - fixed_effect_se, ymax = fixed_effect + fixed_effect_se), width = 0.2) +
+  labs(
+    title = "Fixed Effect Comparison Across Methods",
+    x = "Zenith Angle (endVZA)",
+    y = "Fixed Effect Coefficient",
+    color = "Method"
+  ) +
+  theme_minimal(base_size = 14)
+
+
+ggplot(method_comparison, aes(x = factor(endVZA), y = AIC, color = method, group = method)) +
+  geom_point(size = 3) +
+  geom_line(size = 1) +
+  labs(
+    title = "AIC Comparison Across Methods",
+    x = "Zenith Angle (endVZA)",
+    y = "AIC",
+    color = "Method"
+  ) +
+  theme_minimal(base_size = 14)
+
+
+```
+
+##### Marginal and conditional R2 with and wo conifer
+
+```{r R2 marginal COMBINED}
+# Define the plot IDs without conifer trees
+plot_ids <- c("LT11", "LT13", "LT14", "LT23", "LT24",
+              "LT33", "LT41", "LT44", "LT34",
+              "LT51", "LT52", "LT53", "LT61", "LT62", "LT63")
+
+# Initialize an empty dataframe to store R² results for both datasets
+r2_results_combined <- data.frame(
+  endVZA = character(),
+  method = character(),
+  R2_type = character(),
+  R2_value = numeric(),
+  dataset = character()  # New column to distinguish datasets
+)
+
+# Define the methods to compare
+methods <- c("canopy.L", "canopy.Le", "LAI.LXG1", "LAI.LXG2")
+
+# Loop through each zenith angle and method for filtered dataset
+for (angle in c(10, 20, 30, 40, 50, 60, 70, 80, 90, 'Hinge')) {
+  for (method in methods) {
+    # Filter data for current endVZA and plot IDs (filtered dataset)
+    data_angle_filtered <- merged_data_cumulative %>%
+      filter(endVZA == angle, plot %in% plot_ids)
+    
+    # Fit mixed-effects model for filtered dataset
+    model_filtered <- lmer(as.formula(paste("absolute_lai ~", method, "+ (1 | plot)")), data = data_angle_filtered) 
+    #, "+ (1 | plot)"
+    
+    # Extract R² values for filtered dataset
+    r2_values_filtered <- r.squaredGLMM(model_filtered)
+    
+    # Append results for filtered dataset
+    r2_results_combined <- rbind(r2_results_combined,
+                                 data.frame(
+                                   endVZA = angle,
+                                   method = method,
+                                   R2_type = "Marginal",
+                                   R2_value = r2_values_filtered[1],  # Marginal R²
+                                   dataset = "wo conifer"  # Update label
+                                 ),
+                                 data.frame(
+                                   endVZA = angle,
+                                   method = method,
+                                   R2_type = "Conditional",
+                                   R2_value = r2_values_filtered[2],  # Conditional R²
+                                   dataset = "wo conifer"  # Update label
+                                 ))
+    
+    # Filter data for current endVZA (unfiltered dataset)
+    data_angle_unfiltered <- merged_data_cumulative %>% filter(endVZA == angle)
+    
+    # Fit mixed-effects model for unfiltered dataset
+    model_unfiltered <- lmer(as.formula(paste("absolute_lai ~", method, "+ (1 | plot)")), data = data_angle_unfiltered)
+    #, "+ (1 | plot)"
+    # Extract R² values for unfiltered dataset
+    r2_values_unfiltered <- r.squaredGLMM(model_unfiltered)
+    
+    
+    # Append results for unfiltered dataset
+    r2_results_combined <- rbind(r2_results_combined,
+                                 data.frame(
+                                   endVZA = angle,
+                                   method = method,
+                                   R2_type = "Marginal",
+                                   R2_value = r2_values_unfiltered[1],  # Marginal R²
+                                   dataset = "all plots"  # Update label
+                                 ),
+                                 data.frame(
+                                   endVZA = angle,
+                                   method = method,
+                                   R2_type = "Conditional",
+                                   R2_value = r2_values_unfiltered[2],  # Conditional R²
+                                   dataset = "all plots"  # Update label
+                                 ))
+  }
+}
+
+# Plot Marginal R² for both datasets with updated labels and symbols
+ggplot(filter(r2_results_combined, R2_type == "Marginal"), 
+       aes(x = factor(endVZA), y = R2_value, color = method, shape = dataset, group = interaction(method, dataset))) +
+  geom_point(size = 3) +
+  geom_line(size = 1) +
+  scale_shape_manual(values = c("wo conifer" = 17, "all plots" = 16)) +  # Triangle for wo conifer, circle for all plots
+  labs(
+    title = "Marginal R² Across Methods and Zenith Angles",
+    x = "Zenith Angle (endVZA)",
+    y = "Marginal R² Value",
+    color = "Method",
+    shape = "Dataset"
+  ) +
+  theme_minimal(base_size = 14)
+
+
+```
+
+```{r R2 mixed all}
+# Define the plot IDs without conifer trees
+plot_ids <- c("LT11", "LT13", "LT14", "LT23", "LT24",
+              "LT33", "LT41", "LT44", "LT34",
+              "LT51", "LT52", "LT53", "LT61", "LT62", "LT63")
+
+# Initialize an empty dataframe to store R² results for both datasets
+r2_results_combined <- data.frame(
+  endVZA = character(),
+  method = character(),
+  R2_type = character(),
+  R2_value = numeric(),
+  dataset = character()  # New column to distinguish datasets
+)
+
+# Define the methods to compare
+methods <- c("canopy.L", "canopy.Le", "LAI.LXG1", "LAI.LXG2")
+
+# Loop through each zenith angle and method for filtered dataset
+for (angle in c(10, 20, 30, 40, 50, 60, 70, 80, 90, 'Hinge')) {
+  for (method in methods) {
+    # Filter data for current endVZA and plot IDs (filtered dataset)
+    data_angle_filtered <- merged_data_cumulative %>%
+      filter(endVZA == angle, plot %in% plot_ids)
+    
+    # Fit mixed-effects model for filtered dataset
+    model_filtered <- lmer(as.formula(paste("absolute_lai ~", method, "+ (1 | plot)")), data = data_angle_filtered) 
+    #, "+ (1 | plot)"
+    summary(model_filtered)
+    # Extract R² values for filtered dataset
+    r2_values_filtered <- r.squaredGLMM(model_filtered)
+    
+    # Append results for filtered dataset
+    r2_results_combined <- rbind(r2_results_combined,
+                                 data.frame(
+                                   endVZA = angle,
+                                   method = method,
+                                   R2_type = "Marginal",
+                                   R2_value = r2_values_filtered[1],  # Marginal R²
+                                   dataset = "wo conifer"  # Update label
+                                 ),
+                                 data.frame(
+                                   endVZA = angle,
+                                   method = method,
+                                   R2_type = "Conditional",
+                                   R2_value = r2_values_filtered[2],  # Conditional R²
+                                   dataset = "wo conifer"  # Update label
+                                 ))
+    
+    # Filter data for current endVZA (unfiltered dataset)
+    data_angle_unfiltered <- merged_data_cumulative %>% filter(endVZA == angle)
+    
+    # Fit mixed-effects model for unfiltered dataset
+    model_unfiltered <- lmer(as.formula(paste("absolute_lai ~", method, "+ (1 | plot)")), data = data_angle_unfiltered)
+    #, "+ (1 | plot)"
+    # Extract R² values for unfiltered dataset
+    r2_values_unfiltered <- r.squaredGLMM(model_unfiltered)
+    
+    # Append results for unfiltered dataset
+    r2_results_combined <- rbind(r2_results_combined,
+                                 data.frame(
+                                   endVZA = angle,
+                                   method = method,
+                                   R2_type = "Marginal",
+                                   R2_value = r2_values_unfiltered[1],  # Marginal R²
+                                   dataset = "all plots"  # Update label
+                                 ),
+                                 data.frame(
+                                   endVZA = angle,
+                                   method = method,
+                                   R2_type = "Conditional",
+                                   R2_value = r2_values_unfiltered[2],  # Conditional R²
+                                   dataset = "all plots"  # Update label
+                                 ))
+  }
+}
+
+# Plot Marginal R² for both datasets with updated labels and symbols
+ggplot(filter(r2_results_combined, R2_type == "Marginal"), 
+       aes(x = factor(endVZA), y = R2_value, color = method, shape = dataset, group = interaction(method, dataset))) +
+  geom_point(size = 3) +
+  geom_line(size = 1) +
+  scale_shape_manual(values = c("wo conifer" = 17, "all plots" = 16)) +  # Triangle for wo conifer, circle for all plots
+  labs(
+    title = "Marginal R² Across Methods and Zenith Angles wo end phase of leaf fall",
+    x = "Zenith Angle (endVZA)",
+    y = "Marginal R² Value",
+    color = "Method",
+    shape = "Dataset"
+  ) +
+  theme_minimal(base_size = 14)
+
+```
+
+
+```{r RMSE and bias}
+# Define the plot IDs without conifer trees
+plot_ids <- c("LT11", "LT13", "LT14", "LT23", "LT24",
+              "LT33", "LT41", "LT44", "LT34",
+              "LT51", "LT52", "LT53", "LT61", "LT62", "LT63")
+
+# Initialize an empty dataframe to store RMSE, MAE, and MBE results
+error_metrics_combined <- data.frame(
+  endVZA = character(),
+  method = character(),
+  metric = character(),
+  value = numeric(),
+  dataset = character()
+)
+
+# Define the methods to compare
+methods <- c("canopy.L", "canopy.Le", "LAI.LXG1", "LAI.LXG2")
+
+# Loop through each zenith angle and method
+for (angle in c(10, 20, 30, 40, 50, 60, 70, 80, 90, 'Hinge')) {
+  for (method in methods) {
+    # Filter data for current endVZA and plot IDs
+    data_angle_filtered <- merged_data_cumulative %>%
+      filter(endVZA == angle, plot %in% plot_ids)
+    
+    # Fit mixed-effects model
+    model_filtered <- lmer(as.formula(paste("absolute_lai ~", method, "+ (1 | plot)")), data = data_angle_filtered)
+    
+    # Predicted and actual values
+    predictions <- predict(model_filtered, re.form = NULL)
+    actuals <- data_angle_filtered$absolute_lai
+    
+    # Calculate RMSE, MAE, and MBE
+    rmse <- sqrt(mean((actuals - predictions)^2))
+    mae <- mean(abs(actuals - predictions))
+    mbe <- mean(actuals - predictions)
+    
+    # Append results for filtered dataset
+    error_metrics_combined <- rbind(error_metrics_combined,
+                                    data.frame(endVZA = angle, method = method, metric = "RMSE", value = rmse, dataset = "wo conifer"),
+                                    data.frame(endVZA = angle, method = method, metric = "MAE", value = mae, dataset = "wo conifer"),
+                                    data.frame(endVZA = angle, method = method, metric = "MBE", value = mbe, dataset = "wo conifer"))
+    
+    # Filter data for current endVZA (unfiltered dataset)
+    data_angle_unfiltered <- merged_data_cumulative %>% filter(endVZA == angle)
+    
+    # Fit mixed-effects model for unfiltered dataset
+    model_unfiltered <- lmer(as.formula(paste("absolute_lai ~", method, "+ (1 | plot)")), data = data_angle_unfiltered)
+    
+    # Predicted and actual values for unfiltered dataset
+    predictions_unfiltered <- predict(model_unfiltered, re.form = NULL)
+    actuals_unfiltered <- data_angle_unfiltered$absolute_lai
+    
+    # Calculate RMSE, MAE, and MBE for unfiltered dataset
+    rmse_unfiltered <- sqrt(mean((actuals_unfiltered - predictions_unfiltered)^2))
+    mae_unfiltered <- mean(abs(actuals_unfiltered - predictions_unfiltered))
+    mbe_unfiltered <- mean(actuals_unfiltered - predictions_unfiltered)
+    
+    # Append results for unfiltered dataset
+    error_metrics_combined <- rbind(error_metrics_combined,
+                                    data.frame(endVZA = angle, method = method, metric = "RMSE", value = rmse_unfiltered, dataset = "all plots"),
+                                    data.frame(endVZA = angle, method = method, metric = "MAE", value = mae_unfiltered, dataset = "all plots"),
+                                    data.frame(endVZA = angle, method = method, metric = "MBE", value = mbe_unfiltered, dataset = "all plots"))
+  }
+}
+
+# Convert endVZA to factor for consistent plotting
+error_metrics_combined$endVZA <- factor(error_metrics_combined$endVZA, levels = unique(error_metrics_combined$endVZA))
+
+# Define a function to create separate plots for each metric
+plot_error_metric <- function(data, metric_name) {
+  ggplot(data %>% filter(metric == metric_name),
+         aes(x = endVZA, y = value, color = method, shape = dataset, group = interaction(method, dataset))) +
+    geom_point(size = 3) +
+    geom_line(size = 1) +
+    scale_shape_manual(values = c("wo conifer" = 17, "all plots" = 16)) +  # Triangle for wo conifer, circle for all plots
+    labs(
+      title = paste(metric_name, "Across Methods and Zenith Angles"),
+      x = "Zenith Angle (endVZA)",
+      y = paste(metric_name, "Value"),
+      color = "Method",
+      shape = "Dataset"
+    ) +
+    theme_minimal(base_size = 14)
+}
+
+# Separate plots for RMSE, MAE, and MBE
+rmse_plot <- plot_error_metric(error_metrics_combined, "RMSE")
+mae_plot <- plot_error_metric(error_metrics_combined, "MAE")
+mbe_plot <- plot_error_metric(error_metrics_combined, "MBE")
+
+# Display the plots individually
+print(rmse_plot)
+print(mae_plot)
+print(mbe_plot)
+
+# Define a function for MBE with rounded y-axis labels
+plot_mbe_metric <- function(data) {
+  ggplot(data %>% filter(metric == "MBE"),
+         aes(x = endVZA, y = value, color = method, shape = dataset, group = interaction(method, dataset))) +
+    geom_point(size = 3) +
+    geom_line(size = 1) +
+    scale_shape_manual(values = c("wo conifer" = 17, "all plots" = 16)) +  # Triangle for wo conifer, circle for all plots
+    scale_y_continuous(labels = scales::number_format(accuracy = 0.0001)) +  # Round MBE to 3 decimal places
+    labs(
+      title = "MBE Across Methods and Zenith Angles (Rounded)",
+      x = "Zenith Angle (endVZA)",
+      y = "Mean Bias Error (MBE)",
+      color = "Method",
+      shape = "Dataset"
+    ) +
+    theme_minimal(base_size = 14)
+}
+
+# Create and display the updated MBE plot
+mbe_plot <- plot_mbe_metric(error_metrics_combined)
+print(mbe_plot)
+
+```
+
+```{r RMSE, bias and variance of residuals}
+# Define the plot IDs without conifer trees
+plot_ids <- c("LT11", "LT13", "LT14", "LT23", "LT24",
+              "LT33", "LT41", "LT44", "LT34",
+              "LT51", "LT52", "LT53", "LT61", "LT62", "LT63")
+
+# Initialize an empty dataframe to store RMSE, MAE, MBE, and Variance of Residuals
+error_metrics_combined <- data.frame(
+  endVZA = character(),
+  method = character(),
+  metric = character(),
+  value = numeric(),
+  dataset = character()
+)
+
+# Define the methods to compare
+methods <- c("canopy.L", "canopy.Le", "LAI.LXG1", "LAI.LXG2")
+
+# Loop through each zenith angle and method
+for (angle in c(10, 20, 30, 40, 50, 60, 70, 80, 90)) {
+  for (method in methods) {
+    # Filter data for current endVZA and plot IDs
+    data_angle_filtered <- merged_data_cumulative %>%
+      filter(endVZA == angle, plot %in% plot_ids)
+    # Fit mixed-effects model
+    model_filtered <- lmer(as.formula(paste("absolute_lai ~", method, "+ (1 | plot)")), data = data_angle_filtered)
+    summary(model_filtered)
+    
+    # Predicted and actual values
+    predictions <- predict(model_filtered, re.form = NULL)
+    actuals <- data_angle_filtered$absolute_lai
+    residuals <- actuals - predictions  # Calculate residuals
+    
+    # Calculate RMSE, MAE, MBE, and Variance of Residuals
+    rmse <- sqrt(mean(residuals^2))
+    mae <- mean(abs(residuals))
+    mbe <- mean(residuals)
+    var_residuals <- var(residuals)  # Variance of residuals
+    
+    # Append results for filtered dataset
+    error_metrics_combined <- rbind(error_metrics_combined,
+                                    data.frame(endVZA = angle, method = method, metric = "RMSE", value = rmse, dataset = "wo conifer"),
+                                    data.frame(endVZA = angle, method = method, metric = "MAE", value = mae, dataset = "wo conifer"),
+                                    data.frame(endVZA = angle, method = method, metric = "MBE", value = mbe, dataset = "wo conifer"),
+                                    data.frame(endVZA = angle, method = method, metric = "Variance", value = var_residuals, dataset = "wo conifer"))
+
+    # Repeat for the unfiltered dataset
+    data_angle_unfiltered <- merged_data_cumulative %>% filter(endVZA == angle)
+    
+    model_unfiltered <- lmer(as.formula(paste("absolute_lai ~", method, "+ (1 | plot)")), data = data_angle_unfiltered)
+    
+    predictions_unfiltered <- predict(model_unfiltered, re.form = NULL)
+    actuals_unfiltered <- data_angle_unfiltered$absolute_lai
+    residuals_unfiltered <- actuals_unfiltered - predictions_unfiltered  # Calculate residuals
+    
+    rmse_unfiltered <- sqrt(mean(residuals_unfiltered^2))
+    mae_unfiltered <- mean(abs(residuals_unfiltered))
+    mbe_unfiltered <- mean(residuals_unfiltered)
+    var_residuals_unfiltered <- var(residuals_unfiltered)  # Variance of residuals
+    
+    # Append results for unfiltered dataset
+    error_metrics_combined <- rbind(error_metrics_combined,
+                                    data.frame(endVZA = angle, method = method, metric = "RMSE", value = rmse_unfiltered, dataset = "all plots"),
+                                    data.frame(endVZA = angle, method = method, metric = "MAE", value = mae_unfiltered, dataset = "all plots"),
+                                    data.frame(endVZA = angle, method = method, metric = "MBE", value = mbe_unfiltered, dataset = "all plots"),
+                                    data.frame(endVZA = angle, method = method, metric = "Variance", value = var_residuals_unfiltered, dataset = "all plots"))
+  }
+}
+
+# Convert endVZA to factor for consistent plotting
+error_metrics_combined$endVZA <- factor(error_metrics_combined$endVZA, levels = unique(error_metrics_combined$endVZA))
+
+# Define a function to create separate plots for each metric
+plot_error_metric <- function(data, metric_name) {
+  ggplot(data %>% filter(metric == metric_name),
+         aes(x = endVZA, y = value, color = method, shape = dataset, group = interaction(method, dataset))) +
+    geom_point(size = 3) +
+    geom_line(size = 1) +
+    scale_shape_manual(values = c("wo conifer" = 17, "all plots" = 16)) +  # Triangle for wo conifer, circle for all plots
+    labs(
+      title = paste(metric_name, "Across Methods and Zenith Angles"),
+      x = "Zenith Angle (endVZA)",
+      y = paste(metric_name, "Value"),
+      color = "Method",
+      shape = "Dataset"
+    ) +
+    theme_minimal(base_size = 14)
+}
+
+# Generate plots for RMSE, MAE, MBE, and Variance
+rmse_plot <- plot_error_metric(error_metrics_combined, "RMSE")
+mae_plot <- plot_error_metric(error_metrics_combined, "MAE")
+mbe_plot <- plot_error_metric(error_metrics_combined, "MBE")
+variance_plot <- plot_error_metric(error_metrics_combined, "Variance")
+
+# Display the plots individually
+print(rmse_plot)
+print(mae_plot)
+print(mbe_plot)
+print(variance_plot)
+
+```
+
+```{r RMSE; BIAS; VARIANCE wo end}
+# Define the plot IDs without conifer trees
+plot_ids <- c("LT11", "LT13", "LT14", "LT23", "LT24",
+              "LT33", "LT41", "LT44", "LT34",
+              "LT51", "LT52", "LT53", "LT61", "LT62", "LT63")
+
+# Initialize an empty dataframe to store RMSE, MAE, MBE, and Variance of Residuals
+error_metrics_combined <- data.frame(
+  endVZA = character(),
+  method = character(),
+  metric = character(),
+  value = numeric(),
+  dataset = character()
+)
+
+# Define the methods to compare
+methods <- c("canopy.L", "canopy.Le", "LAI.LXG1", "LAI.LXG2")
+
+# Loop through each zenith angle and method
+for (angle in c(10, 20, 30, 40, 50, 60, 70, 80, 90, 'Hinge')) {
+  for (method in methods) {
+    # Filter data for current endVZA and plot IDs
+    data_angle_filtered <- merged_data_cumulative_ %>%
+      filter(endVZA == angle, plot %in% plot_ids)
+    
+    # Fit mixed-effects model
+    model_filtered <- lmer(as.formula(paste("absolute_lai ~", method, "+ (1 | plot)")), data = data_angle_filtered)
+    
+    # Predicted and actual values
+    predictions <- predict(model_filtered, re.form = NULL)
+    actuals <- data_angle_filtered$absolute_lai
+    residuals <- actuals - predictions  # Calculate residuals
+    
+    # Calculate RMSE, MAE, MBE, and Variance of Residuals
+    rmse <- sqrt(mean(residuals^2))
+    mae <- mean(abs(residuals))
+    mbe <- mean(residuals)
+    var_residuals <- var(residuals)  # Variance of residuals
+    
+    # Append results for filtered dataset
+    error_metrics_combined <- rbind(error_metrics_combined,
+                                    data.frame(endVZA = angle, method = method, metric = "RMSE", value = rmse, dataset = "wo conifer"),
+                                    data.frame(endVZA = angle, method = method, metric = "MAE", value = mae, dataset = "wo conifer"),
+                                    data.frame(endVZA = angle, method = method, metric = "MBE", value = mbe, dataset = "wo conifer"),
+                                    data.frame(endVZA = angle, method = method, metric = "Variance", value = var_residuals, dataset = "wo conifer"))
+
+    # Repeat for the unfiltered dataset
+    data_angle_unfiltered <- merged_data_cumulative_ %>% filter(endVZA == angle)
+    
+    model_unfiltered <- lmer(as.formula(paste("absolute_lai ~", method, "+ (1 | plot)")), data = data_angle_unfiltered)
+    
+    predictions_unfiltered <- predict(model_unfiltered, re.form = NULL)
+    actuals_unfiltered <- data_angle_unfiltered$absolute_lai
+    residuals_unfiltered <- actuals_unfiltered - predictions_unfiltered  # Calculate residuals
+    
+    rmse_unfiltered <- sqrt(mean(residuals_unfiltered^2))
+    mae_unfiltered <- mean(abs(residuals_unfiltered))
+    mbe_unfiltered <- mean(residuals_unfiltered)
+    var_residuals_unfiltered <- var(residuals_unfiltered)  # Variance of residuals
+    
+    # Append results for unfiltered dataset
+    error_metrics_combined <- rbind(error_metrics_combined,
+                                    data.frame(endVZA = angle, method = method, metric = "RMSE", value = rmse_unfiltered, dataset = "all plots"),
+                                    data.frame(endVZA = angle, method = method, metric = "MAE", value = mae_unfiltered, dataset = "all plots"),
+                                    data.frame(endVZA = angle, method = method, metric = "MBE", value = mbe_unfiltered, dataset = "all plots"),
+                                    data.frame(endVZA = angle, method = method, metric = "Variance", value = var_residuals_unfiltered, dataset = "all plots"))
+  }
+}
+
+# Convert endVZA to factor for consistent plotting
+error_metrics_combined$endVZA <- factor(error_metrics_combined$endVZA, levels = unique(error_metrics_combined$endVZA))
+
+# Define a function to create separate plots for each metric
+plot_error_metric <- function(data, metric_name) {
+  ggplot(data %>% filter(metric == metric_name),
+         aes(x = endVZA, y = value, color = method, shape = dataset, group = interaction(method, dataset))) +
+    geom_point(size = 3) +
+    geom_line(size = 1) +
+    scale_shape_manual(values = c("wo conifer" = 17, "all plots" = 16)) +  # Triangle for wo conifer, circle for all plots
+    labs(
+      title = paste(metric_name, "Across Methods and Zenith Angles"),
+      x = "Zenith Angle (endVZA)",
+      y = paste(metric_name, "Value"),
+      color = "Method",
+      shape = "Dataset"
+    ) +
+    theme_minimal(base_size = 14)
+}
+
+# Generate plots for RMSE, MAE, MBE, and Variance
+rmse_plot <- plot_error_metric(error_metrics_combined, "RMSE")
+mae_plot <- plot_error_metric(error_metrics_combined, "MAE")
+mbe_plot <- plot_error_metric(error_metrics_combined, "MBE")
+variance_plot <- plot_error_metric(error_metrics_combined, "Variance")
+
+# Display the plots individually
+print(rmse_plot)
+print(mae_plot)
+print(mbe_plot)
+print(variance_plot)
+
+```
+
+##### TRYS
+```{r predicted vs actual}
+# Filter data for angles 20, 30, and 40 and the specified methods
+selected_angles <- c(20, 30, 40)
+methods <- c("canopy.L", "canopy.Le", "LAI.LXG1", "LAI.LXG2")
+
+# Initialize an empty dataframe to store predictions
+predictions_combined <- data.frame(
+  absolute_lai = numeric(),
+  predicted_lai = numeric(),
+  method = character(),
+  endVZA = numeric()
+)
+nrow(filter(merged_data_cumulative, phase == 'end'))
+# Loop through each zenith angle and method
+for (angle in selected_angles) {
+  for (method in methods) {
+    # Filter data for current angle and plot IDs
+    data_filtered <- merged_data_cumulative %>%
+      filter(endVZA == angle, plot %in% plot_ids)
+
+    # Fit mixed-effects model
+    model <- lmer(as.formula(paste("absolute_lai ~", method, "+ (1 | plot)")), data = data_filtered)
+
+    # Generate predictions
+    predicted_values <- predict(model, re.form = NULL)
+    
+    # Append results to dataframe
+    predictions_combined <- rbind(predictions_combined,
+                                  data.frame(
+                                    absolute_lai = data_filtered$absolute_lai,
+                                    predicted_lai = predicted_values,
+                                    method = method,
+                                    endVZA = angle
+                                  ))
+  }
+}
+
+# Convert endVZA to a factor for better plotting
+predictions_combined$endVZA <- factor(predictions_combined$endVZA, levels = selected_angles)
+
+# Define a function to generate plots for each zenith angle
+plot_pred_vs_abs <- function(angle) {
+  ggplot(predictions_combined %>% filter(endVZA == angle), 
+         aes(x = absolute_lai, y = predicted_lai, color = method)) +
+    geom_point(size = 1, alpha = 0.7) +
+    geom_smooth(method = "lm", se = FALSE, linetype = "dashed") +  # Linear regression lines
+    geom_abline(slope = 1, intercept = 0, linetype = "dotted", color = "black") +  # 1:1 reference line
+    labs(
+      title = paste("Predicted vs Absolute LAI (Zenith Angle =", angle, "°)"),
+      x = "Absolute LAI (LT)",
+      y = "Predicted LAI (HemispheR)",
+      color = "Method"
+    ) +
+    theme_minimal(base_size = 14) +
+    scale_color_brewer(palette = "Set1")
+}
+
+# Generate and display plots for each angle
+plot_20 <- plot_pred_vs_abs(20)
+plot_30 <- plot_pred_vs_abs(30)
+plot_40 <- plot_pred_vs_abs(40)
+
+# Display plots
+print(plot_20)
+print(plot_30)
+print(plot_40)
+
+
+```
+
+```{r}
+
+ggplot(LAI_LT, aes(x = as.factor(endVZA), y = canopy.MTA.ell)) +
+  geom_boxplot()
+```
+```{r R2 mixed all}
+# Define the plot IDs without conifer trees
+plot_ids <- c("LT11", "LT13", "LT14", "LT23", "LT24",
+              "LT33", "LT41", "LT44", "LT34",
+              "LT51", "LT52", "LT53", "LT61", "LT62", "LT63")
+
+# Initialize an empty dataframe to store R² results for both datasets
+r2_results_combined <- data.frame(
+  endVZA = character(),
+  method = character(),
+  R2_type = character(),
+  R2_value = numeric(),
+  dataset = character()  # New column to distinguish datasets
+)
+
+# Define the methods to compare
+methods <- c("canopy.L", "canopy.Le", "LAI.LXG1", "LAI.LXG2")
+
+# Loop through each zenith angle and method for filtered dataset
+for (angle in c(10, 20, 30, 40, 50, 60, 70, 80, 90, 'Hinge')) {
+  for (method in methods) {
+    # Filter data for current endVZA and plot IDs (filtered dataset)
+    data_angle_filtered <- merged_data_cumulative %>%
+      filter(endVZA == angle, plot %in% plot_ids)
+    
+    # Fit mixed-effects model for filtered dataset
+    model_filtered <- lmer(as.formula(paste("absolute_lai ~", method, "+ (1 | plot)")), data = data_angle_filtered) 
+    #, "+ (1 | plot)"
+    summary(model_filtered)
+    # Extract R² values for filtered dataset
+    r2_values_filtered <- r.squaredGLMM(model_filtered)
+    
+    # Append results for filtered dataset
+    r2_results_combined <- rbind(r2_results_combined,
+                                 data.frame(
+                                   endVZA = angle,
+                                   method = method,
+                                   R2_type = "Marginal",
+                                   R2_value = r2_values_filtered[1],  # Marginal R²
+                                   dataset = "wo conifer"  # Update label
+                                 ),
+                                 data.frame(
+                                   endVZA = angle,
+                                   method = method,
+                                   R2_type = "Conditional",
+                                   R2_value = r2_values_filtered[2],  # Conditional R²
+                                   dataset = "wo conifer"  # Update label
+                                 ))
+    
+    # Filter data for current endVZA (unfiltered dataset)
+    data_angle_unfiltered <- merged_data_cumulative %>% filter(endVZA == angle)
+    
+    # Fit mixed-effects model for unfiltered dataset
+    model_unfiltered <- lmer(as.formula(paste("absolute_lai ~", method, "+ (1 | plot)")), data = data_angle_unfiltered)
+    #, "+ (1 | plot)"
+    # Extract R² values for unfiltered dataset
+    r2_values_unfiltered <- r.squaredGLMM(model_unfiltered)
+    
+    # Append results for unfiltered dataset
+    r2_results_combined <- rbind(r2_results_combined,
+                                 data.frame(
+                                   endVZA = angle,
+                                   method = method,
+                                   R2_type = "Marginal",
+                                   R2_value = r2_values_unfiltered[1],  # Marginal R²
+                                   dataset = "all plots"  # Update label
+                                 ),
+                                 data.frame(
+                                   endVZA = angle,
+                                   method = method,
+                                   R2_type = "Conditional",
+                                   R2_value = r2_values_unfiltered[2],  # Conditional R²
+                                   dataset = "all plots"  # Update label
+                                 ))
+  }
+}
+
+# Plot Marginal R² for both datasets with updated labels and symbols
+ggplot(filter(r2_results_combined, R2_type == "Marginal"), 
+       aes(x = factor(endVZA), y = R2_value, color = method, shape = dataset, group = interaction(method, dataset))) +
+  geom_point(size = 3) +
+  geom_line(size = 1) +
+  scale_shape_manual(values = c("wo conifer" = 17, "all plots" = 16)) +  # Triangle for wo conifer, circle for all plots
+  labs(
+    title = "Marginal R² Across Methods and Zenith Angles wo end phase of leaf fall",
+    x = "Zenith Angle (endVZA)",
+    y = "Marginal R² Value",
+    color = "Method",
+    shape = "Dataset"
+  ) +
+  theme_minimal(base_size = 14)
+
+```
+
+# FINAL PLOTS
+CHECK FOR:
+
+FONT SIZE
+COLORS
+
+```{r LAI OVER TZIME}
+# Filter data for LAI.LXG1 at 20° only
+filtered_data <- merged_data_cumulative %>%
+  filter(endVZA == 20) %>%
+  filter(plot %in% plot_ids_wo_conifer)
+
+# Calculate summary statistics for both actual LAI and LAI.LXG1 (20°)
+summary_data <- filtered_data %>%
+  group_by(date) %>%
+  summarise(
+    mean_actual_LAI = mean(absolute_lai, na.rm = TRUE),
+    p5_actual_LAI = quantile(absolute_lai, 0.05, na.rm = TRUE),
+    p95_actual_LAI = quantile(absolute_lai, 0.95, na.rm = TRUE),
+    mean_LAI_LXG1 = mean(LAI.LXG1, na.rm = TRUE),
+    p5_LAI_LXG1 = quantile(LAI.LXG1, 0.05, na.rm = TRUE),
+    p95_LAI_LXG1 = quantile(LAI.LXG1, 0.95, na.rm = TRUE)
+  )
+
+# Create the plot
+p <- ggplot(summary_data, aes(x = date)) +
+  # Shaded region for actual LAI 5th-95th percentile range
+  geom_ribbon(aes(ymin = p5_actual_LAI, ymax = p95_actual_LAI), fill = "black", alpha = 0.2) +
+  # Shaded region for LAI.LXG1 (20°) 5th-95th percentile range
+  geom_ribbon(aes(ymin = p5_LAI_LXG1, ymax = p95_LAI_LXG1), fill = "#1F77B4", alpha = 0.2) +
+  # Line for mean actual LAI
+  geom_line(aes(y = mean_actual_LAI, color = "Mean Actual LAI"), size = 1.2, linetype = "solid") +
+  # Line for mean LAI.LXG1 (20°)
+  geom_line(aes(y = mean_LAI_LXG1, color = "Mean LAI.LXG1"), size = 1, linetype = "solid") +  # Adjusted label
+  labs(
+    # title = "LAI Over Time: Actual vs. Estimated (LXG1, 20°)",
+    x = "Date", 
+    y = "LAI",
+    color = NULL  # Remove legend title
+  ) +
+  scale_color_manual(values = c("Mean Actual LAI" = "black", "Mean LAI.LXG1" = "#1F77B4")) +  # Adjusted color entry
+  theme_minimal() +
+  theme(text = element_text(family = "Helvetica", size = 25),  # Set font to Helvetica
+    plot.title = element_text(size = 25, face = "bold"),  # Increase title size
+    axis.title.x = element_text(size = 25),  # Increase x-axis label size
+    axis.title.y = element_text(size = 25),  # Increase y-axis label size
+    axis.text.x = element_text(size = 25),   # Increase x-axis tick label size
+    axis.text.y = element_text(size = 25),   # Increase y-axis tick label size
+    legend.text = element_text(size = 25),    # Increase legend text size
+    legend.title = element_blank(),            # Remove legend title
+    legend.position = "bottom"
+  )
+
+# Save the plot
+ggsave("/Users/simon/Documents/Master/Masterarbeit/LAMeasurement/Plots/Plots/LAI_over_time.png", plot = p, width = 10, height = 6, dpi = 300)
+
+
+
+```
+
+```{r big plot wo conifer}
+# Load necessary library
+library(patchwork)
+
+plot_data <- merged_data_cumulative %>%
+  filter(endVZA == 20) %>%
+  filter(plot %in% plot_ids_wo_conifer)
+
+# Define custom phase colors
+custom_colors <- c("onset" = "#1F77B4",  # Blue
+                   "peak" = "#2CA02C",  # Green
+                   "end" = "#FF7F0E")  # Orange
+
+# Function to create the plot
+create_plot <- function(plot_data, x_var, y_var, method_name) {
+  # Define a mapping of method names to display names
+  method_labels <- c("canopy.Le" = "Effective LAI", 
+                     "LAI.LXG1" = "Clumping LXG1 LAI")
+  
+  # Get the correct display name
+  display_name <- method_labels[method_name]
+  
+  # Ensure phase order in the legend
+  plot_data$phase <- factor(plot_data$phase, levels = c("onset", "peak", "end"))
+  
+  # Compute ranges
+  x_range <- range(plot_data$absolute_lai, na.rm = TRUE)
+  y_range <- range(plot_data[[y_var]], na.rm = TRUE)
+  max_range <- max(c(x_range, y_range))
+  
+  # Fit the linear model
+  lm_model <- lm(as.formula(paste(y_var, "~ absolute_lai")), data = plot_data)
+  intercept <- coef(lm_model)["(Intercept)"]
+  slope <- coef(lm_model)["absolute_lai"]
+  r2 <- summary(lm_model)$r.squared
+  
+  # Format equation label
+  eq_label <- sprintf("y = %.2f + %.2fx,\nR² = %.2f", intercept, slope, r2)
+  
+  # Create the plot
+  p <- ggplot(data = plot_data, aes(x = absolute_lai, y = .data[[y_var]], color = phase)) +
+    geom_point(size = 2) +
+    geom_smooth(method = "lm", color = "darkgrey", se = TRUE) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "black") +
+    geom_text(
+      x = max_range * 0.05, 
+      y = max_range * 0.95, 
+      label = eq_label, 
+      color = "black", 
+      size = 5, 
+      hjust = 0
+    ) +
+    coord_fixed(ratio = 1) +  
+    xlim(0, max_range) + ylim(0, max_range) +  
+    labs(
+      x = "LT LAI",
+      y = "DHP LAI",
+      color = NULL
+    ) +
+    scale_color_manual(values = custom_colors) +  # Apply custom colors
+    theme_minimal() +  
+    theme(text = element_text(family = "Helvetica", size = 20),  # Set font to Helvetica
+      legend.title = element_text(size = 20),
+      legend.text = element_text(size = 20),
+      axis.title = element_text(size = 20),
+      axis.text = element_text(size = 20),
+      plot.margin = margin(15, 15, 15, 15),
+      legend.position = "bottom"  # Move legend below the plot
+    )
+  
+  return(p)
+}
+
+# Create individual plots
+plot2 <- create_plot(plot_data, "absolute_lai", "canopy.Le", "canopy.Le")
+plot3 <- create_plot(plot_data, "absolute_lai", "LAI.LXG1", "LAI.LXG1")
+
+# Combine the plots and center the legend
+final_plot <- (plot2 + plot3) +  
+  plot_layout(guides = "collect") &  # Collect the legend into one shared space
+  theme(
+    legend.position = "bottom"  # Center legend below both plots
+  )
+
+# Display the final combined plot
+print(final_plot)
+
+ggsave("/Users/simon/Documents/Master/Masterarbeit/LAMeasurement/Plots/Plots/final plots/LXGvsLE.png", 
+       plot3, width = 10, height = 5, dpi = 300)
+
+```
+
+Beim nächsten plot auch absolute error und slope dazu? 
+
+
+```{r Slope, Error and R2}
+# Load necessary libraries
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+# Define the methods and angles
+methods_to_plot <- c("canopy.L", "canopy.Le", "LAI.LXG1", "LAI.LXG2")
+vza_angles <- c(10, 20, 30, 40, 50, 60, 70, 80, 90)
+
+# Initialize an empty dataframe to store results
+slope_error_data <- data.frame()
+
+# Loop through each VZA angle
+for (vza in vza_angles) {
+  # Filter data for the current VZA and plot IDs
+  data_vza <- merged_data_cumulative %>%
+    filter(endVZA == vza, plot %in% plot_ids)
+  
+  # Loop through each method
+  for (method in methods_to_plot) {
+    # Fit linear model: HemispheR LAI ~ Absolute LAI
+    lm_model <- lm(data_vza[[method]] ~ data_vza$absolute_lai)
+    
+    # Extract slope
+    slope_value <- coef(lm_model)[2]  # Second coefficient (absolute LAI)
+    
+    # Compute mean absolute error (MAE)
+    abs_error_value <- mean(abs(data_vza[[method]] - data_vza$absolute_lai), na.rm = TRUE)
+    
+    # Compute R²
+    r2_value <- summary(lm_model)$r.squared
+    
+    # Store the results
+    slope_error_data <- rbind(slope_error_data, data.frame(
+      endVZA = vza,
+      method = method,
+      abs_error = abs_error_value,
+      slope = slope_value,
+      r_squared = r2_value
+    ))
+  }
+}
+
+# Reshape data for plotting
+slope_error_data_long <- slope_error_data %>%
+  pivot_longer(cols = c(abs_error, slope, r_squared), 
+               names_to = "metric", values_to = "value") %>%
+  mutate(metric = factor(metric, 
+                         levels = c("abs_error", "slope", "r_squared"),
+                         labels = c("Absolute Error", "Slope", "R²")))
+
+# Create the combined plot with facets
+p <- ggplot(slope_error_data_long, aes(x = factor(endVZA, levels = vza_angles), y = value, color = method, group = method)) +
+  geom_point(size = 3) +  # Slightly larger points
+  geom_line(size = 1.2) +  # Slightly thicker lines
+  facet_wrap(~metric, scales = "free_y", nrow = 1, strip.position = "left") +  # Move facet labels to Y-axis
+  labs(x = "View Zenith Angle (VZA)", y = NULL, color = "Method") +  # X-axis label
+  scale_color_manual(name = NULL, 
+                     values = c("canopy.L" = "#1F77B4",   
+                                "canopy.Le" = "#2CA02C",  
+                                "LAI.LXG1" = "#D62728",  
+                                "LAI.LXG2" = "#FF7F0E"),  
+                     labels = c("canopy.Le" = "Effective LAI",
+                                "canopy.L" = "Clumping LX", 
+                                "LAI.LXG1" = "Clumping LXG1",  
+                                "LAI.LXG2" = "Clumping LXG2")) +
+  theme_minimal() +
+  theme(text = element_text(family = "Helvetica"),  # Set font to Helvetica
+        aspect.ratio = 1,  # Make plots more square
+        strip.placement = "outside",  # Move facet labels to the left Y-axis
+        strip.text.y = element_text(size = 16, face = "bold", angle = 90),  # Rotate facet labels, make them bold
+        axis.text = element_text(size = 14),  # Increase tick label size
+        axis.title.x = element_text(size = 16, vjust = -0.5),  # Increase X-axis label size and adjust position
+        axis.title.y = element_text(size = 16),  # Ensure Y-axis label is included
+        axis.text.x = element_text(angle = 30, hjust = 1),  # Angle x-axis labels for all plots
+        legend.text = element_text(size = 14),  # Increase legend text size
+        legend.title = element_text(size = 14, face = "bold"),  # Make legend title bold
+        legend.position = "bottom",  # Move legend below the plot
+        legend.direction = "horizontal")  # Place legend entries side-by-side
+
+# Display the plot
+print(p)
+
+# Save as a larger image to ensure all text fits  
+ggsave("/Users/simon/Documents/Master/Masterarbeit/LAMeasurement/Plots/Plots/final plots/absError_slope_R2.png", 
+       p, width = 10, height = 5, dpi = 300)
+```
+
+```{r showcase}
+# Parameters for the fisheye image
+xc <- 2592       # x-coordinate of the center
+yc <- 1478       # y-coordinate of the center
+radius <- 1476   # Radius of the fisheye circle #1726
+
+# Zenith angles to visualize
+zenith_angles <- c(10, 20, 30, 40, 50, 60, 70, 80, 90)
+
+# Calculate the radii corresponding to zenith angles
+zenith_radii <- sapply(zenith_angles, function(angle) {
+  radius * sin(angle * pi / 180)
+})
+
+# Load the image
+fisheye_image <- readJPEG('/Users/simon/Documents/Master/Masterarbeit/LAMeasurement/Hemispheric_Photos/LT_Ecosense_processed/LT11/LT11_20241112.JPG') # Replace with your image file
+
+# Convert image to a ggplot-friendly format
+image_grob <- grid::rasterGrob(fisheye_image, width = unit(1, "npc"), height = unit(1, "npc"))
+
+# Create a data frame for the rings
+rings_data <- data.frame(
+  x = xc,
+  y = yc,
+  radius = zenith_radii,
+  angle = zenith_angles
+)
+
+# Plot the image with the rings
+ggplot() +
+  annotation_custom(image_grob, xmin = 0, xmax = 2 * xc, ymin = 0, ymax = 2 * yc) +
+  geom_circle(data = rings_data, aes(x0 = x, y0 = y, r = radius, color = factor(angle)), size = 1) +
+  scale_color_manual(
+    values = c("red", "blue", "green", "purple", "orange", "yellow", "cyan", "magenta", "brown"), 
+    name = "Zenith Angle"
+  ) +
+  coord_fixed() + # Ensure circular proportions
+  theme_void() +  # Remove axis labels and gridlines
+  ggtitle("Showcase of the area used for LAI calculation in hemispheR at the 
+          respective zenith angles.")+
+  theme(plot.title.position = "plot",
+        plot.title = element_text(hjust = 0))
+
+```
+```{r showcase 2}
+# Load required libraries
+library(ggplot2)
+library(grid)
+library(jpeg)
+library(ggforce)  # For geom_circle
+library(patchwork)  # For arranging plots
+library(magick)  # For image manipulation
+
+# Parameters for the fisheye image
+xc <- 1478      # x-coordinate of the center
+yc <- 1478      # y-coordinate of the center
+radius <- 1476  # Radius of the fisheye circle
+
+# Zenith angles to visualize
+zenith_angles <- c(10, 20, 30, 40, 50, 60, 70, 80, 90)
+
+# Calculate the radii corresponding to zenith angles
+zenith_radii <- sapply(zenith_angles, function(angle) {
+  radius * sin(angle * pi / 180)
+})
+
+# Load and rotate the first image
+fisheye_image1 <- image_read('/Volumes/Back 3/Ecosense_Art/LT23_20240920.jpg')
+image_grob1 <- grid::rasterGrob(fisheye_image1, width = unit(1, "npc"), height = unit(1, "npc"))
+
+# Load and rotate the second image by 180 degrees
+fisheye_image2 <- image_read('/Volumes/Back 3/Ecosense_Art/LT23_20241216.jpg') %>%
+  image_rotate(180)  # Rotate the image by 180 degrees
+image_grob2 <- grid::rasterGrob(fisheye_image2, width = unit(1, "npc"), height = unit(1, "npc"))
+
+# Check if images are loaded correctly
+if (is.null(fisheye_image1) || is.null(fisheye_image2)) {
+    stop("Error: One or both images did not load correctly.")
+}
+
+# Create a data frame for the rings
+rings_data <- data.frame(
+  x = xc,
+  y = yc,
+  radius = zenith_radii,
+  angle = zenith_angles
+)
+
+# Define colors for angles
+angle_colors <- c("purple", "blue", "cyan", "green", "orange", "yellow", "red", "magenta", "brown")
+
+# Create the first plot (without legend)
+plot1 <- ggplot() +
+  annotation_custom(image_grob1, xmin = 0, xmax = 2 * xc, ymin = 0, ymax = 2 * yc) +
+  geom_circle(data = rings_data, aes(x0 = x, y0 = y, r = radius, color = factor(angle)), size = 1) +
+  scale_color_manual(values = angle_colors, guide = "none") +  # Hides legend
+  coord_fixed() +
+  theme_void() +
+  theme(legend.position = "none")  # Ensure no legend
+
+# Create the second plot (with the rotated image)
+plot2 <- ggplot() +
+  annotation_custom(image_grob2, xmin = 0, xmax = 2 * xc, ymin = 0, ymax = 2 * yc) +  # Use the rotated image
+  geom_circle(data = rings_data, aes(x0 = x, y0 = y, r = radius, color = factor(angle)), size = 1) +
+  scale_color_manual(values = angle_colors, guide = "none") +  # Hides legend
+  coord_fixed() +
+  theme_void() +
+  theme(legend.position = "none")  # Ensure no legend
+
+# Combine both plots side by side (legend removed)
+final_plot <- plot1 + plot2 + plot_layout(guides = "collect")
+
+# Display the final plot
+print(final_plot)
+ggsave("/Users/simon/Documents/Master/Masterarbeit/LAMeasurement/Plots/Plots/final plots/leafonoff_Zenithangle.png", plot = final_plot, width = 7, height = 3, dpi = 300) 
+
+```
+
+alle plots: vlt nur Appendix? 
+```{r all plots all angles ABSOLUTE}
+
+highlight_plot_ids <- c("LT12", "LT21", "LT22", "LT31", "LT32", "LT42", "LT43", "LT54", "LT64")
+
+# Create a list of plots
+plots <- list()
+
+plot_ids <- unique(merged_data_cumulative$plot)
+
+for (plot_id in plot_ids) {
+  plot_data <- merged_data_cumulative %>%
+    filter(plot == plot_id)
+  
+  p <- ggplot(plot_data, aes(x = date)) +
+    # Plot Absolute LAI (LT True LAI) as a single line, no color by endVZA
+    geom_line(aes(y = absolute_lai, color = "Absolute LAI"), size = 1, linetype = "solid", 
+              show.legend = TRUE) +  # Adding the legend entry for "Absolute LAI"
+    # Plot LAI for different endVZA values, each with a different color
+    geom_line(aes(y = LAI.LXG1, color = as.factor(endVZA)), size = 1, linetype = "dashed", 
+              show.legend = TRUE) +  # Adding the legend entries for "endVZA"
+    labs(title = paste("Absolute LAI Over Time - Plot", plot_id), 
+         color = "Line Type") +  # Title and color legend
+    scale_color_manual(values = c("Absolute LAI" = "black", 
+                                 "20" = "#1b9e77", "30" = "#d95f02", "40" = "#7570b3", 
+                                 "50" = "#e7298a", "60" = "#66a61e", "70" = "#e6ab02", 
+                                 "80" = "#a6761d", "90" = "#666666"), 
+                       name = "Line Type / Zenith Angle") +  # Colors for absolute_lai and different zenith angles
+    theme_minimal() +
+    theme(legend.position = "bottom", legend.title = element_text(size = 10), 
+          legend.text = element_text(size = 8))  # Customize legend appearance
+  
+  # Add red border to specific plots (highlighted plots)
+  if (plot_id %in% highlight_plot_ids) {
+    p <- p + theme(plot.margin = margin(10, 10, 10, 10)) + 
+      theme(plot.background = element_rect(color = "red", size = 2))
+  }
+  
+  plots[[plot_id]] <- p
+}
+
+# Combine the plots using patchwork
+big_plot <- wrap_plots(plots, ncol = 3, nrow = 8)
+
+# Save the combined plot
+ggsave("/Users/simon/Documents/Master/Masterarbeit/LAMeasurement/Plots/Plots/final plots/all_plots_LXG1.png", plot = big_plot, width = 20, height = 25, dpi = 300)
+
+```
+
+```{r showcase leaf fall states with breakpoints}
+# Load necessary libraries
+library(ggplot2)
+library(segmented)
+library(dplyr)
+
+# Filter data for endVZA == 60 and sort by date
+plot_data <- merged_data_cumulative %>%
+  filter(endVZA == 20) %>%
+  arrange(date)
+
+# Convert date to numeric (number of days since the first date)
+plot_data$date_numeric <- as.numeric(plot_data$date - min(plot_data$date))
+
+# Fit the initial linear model
+lm_model <- lm(absolute_lai ~ date_numeric, data = plot_data)
+
+# Check the range of the numeric date values to adjust psi
+range(plot_data$date_numeric)
+
+# Fit the segmented regression model using adjusted psi values based on the numeric range
+# For example, if the range of numeric dates is between 0 and 1000, adjust psi within this range
+seg_model <- segmented(lm_model, seg.Z = ~date_numeric, psi = c(35, 73))  # Adjust these based on your data range
+psi <- seg_model$psi
+# Generate the predicted values from the segmented model
+plot_data$segmented_fit <- predict(seg_model, newdata = plot_data)
+# Extract breakpoints (from Est. column of segmented model)
+breakpoints_numeric <- seg_model$psi[, 2]
+
+# Identify the origin (the first date in your dataset)
+origin_date <- min(plot_data$date)
+
+# Convert numeric breakpoints to Date format
+breakpoints_date <- origin_date + breakpoints_numeric
+
+# Create the plot with breakpoints
+ggplot(data = plot_data, aes(x = date, y = absolute_lai)) +
+  geom_point(color = "blue") +  # Plot the absolute LAI points
+  geom_line(aes(y = segmented_fit), color = "red") +  # Add segmented regression line
+  geom_vline(xintercept = breakpoints_date, 
+             color = "black", linetype = "dashed") +  # Mark breakpoints
+  labs(
+    title = "Absolute LAI over Time with Breakpoints",
+    x = "Date",
+    y = "Absolute LAI"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotate date labels for better visibility
+
+```
+
+mixed effect model:
+```{r MME MODEL}
+library(ggplot2)
+library(dplyr)
+library(lme4)
+library(patchwork)
+library(MuMIn)  # For marginal R² calculation
+
+# Define plot IDs without conifer trees
+plot_ids_wo_conifer <- c("LT11", "LT13", "LT14", "LT23", "LT24",
+                         "LT33", "LT41", "LT44", "LT34",
+                         "LT51", "LT52", "LT53", "LT61", "LT62", "LT63")
+
+# Initialize an empty dataframe for storing metrics
+error_metrics_wo_conifer <- data.frame(
+  endVZA = numeric(),
+  metric = character(),
+  value = numeric()
+)
+
+# Loop through each zenith angle for LAI.LXG1 only (excluding conifers)
+for (angle in c(10, 20, 30, 40, 50, 60, 70, 80, 90)) {
+  
+  # Filter data for current VZA and exclude conifers
+  data_filtered <- merged_data_cumulative %>%
+    filter(endVZA == angle, plot %in% plot_ids_wo_conifer)
+  
+  # Fit mixed-effects model
+  model_filtered <- lmer(absolute_lai ~ LAI.LXG1 + (1 | plot), data = data_filtered)
+  
+  # Compute residuals
+  predictions <- predict(model_filtered, re.form = NULL)
+  residuals <- data_filtered$absolute_lai - predictions
+  
+  # Extract fixed effect slope
+  slope <- fixef(model_filtered)["LAI.LXG1"]
+  
+  # Compute **Marginal R²** (fixed effects only)
+  r2_marginal <- r.squaredGLMM(model_filtered)[1]  # First value is marginal R²
+  
+  # Calculate MAE
+  mae <- mean(abs(residuals))
+  
+  # Append results
+  error_metrics_wo_conifer <- rbind(error_metrics_wo_conifer,
+                                    data.frame(endVZA = angle, metric = "R² Marginal", value = r2_marginal),
+                                    data.frame(endVZA = angle, metric = "MAE", value = mae),
+                                    data.frame(endVZA = angle, metric = "Fixed Effect Slope", value = slope))
+}
+
+# Convert endVZA to factor for consistent plotting
+error_metrics_wo_conifer$endVZA <- factor(error_metrics_wo_conifer$endVZA, levels = unique(error_metrics_wo_conifer$endVZA))
+
+# Function to create separate plots for each metric **without titles or captions**
+plot_error_metric <- function(data, metric_name) {
+  ggplot(data %>% filter(metric == metric_name),
+         aes(x = endVZA, y = value, group = 1)) +
+    geom_point(size = 3, color = "#1F77B4") +  
+    geom_line(size = 1, color = "#1F77B4") +   
+    labs(x = "Zenith Angle", y = metric_name) +  # Only axis labels
+    theme_minimal() +
+    theme(
+      text = element_text(family = "Helvetica", size = 20),
+      plot.title = element_blank(),  # Remove title
+      axis.text.x = element_text(angle = 30, hjust = 1),
+      plot.margin = margin(5, 5, 5, 5),  # Reduce extra spacing
+      strip.text.y = element_text(size = 16, face = "bold", angle = 90)  # Rotate facet labels, make them bold
+    )
+}
+
+# Generate individual plots
+r2_plot <- plot_error_metric(error_metrics_wo_conifer, "R² Marginal")  
+mae_plot <- plot_error_metric(error_metrics_wo_conifer, "MAE")
+slope_plot <- plot_error_metric(error_metrics_wo_conifer, "Fixed Effect Slope")
+
+# **Ensure a 3-Column Layout for Scientific Journal**
+final_plot <- (r2_plot + mae_plot + slope_plot) + plot_layout(ncol = 3)
+
+# Save and display with individual plots being quadratic
+ggsave("/Users/simon/Documents/Master/Masterarbeit/LAMeasurement/Plots/Plots/final plots/Marginal_R2_MAE_Slope_LAI_LXG1_wo_conifer.png", 
+       plot = final_plot, width = 12, height = 4, dpi = 300)  # Wider aspect ratio for the full figure
+print(final_plot)
+
+```
+
