@@ -7,9 +7,6 @@ editor: visual
 
 # Data manipulation and plotting
 
-DHP_LAI = LAI from hemispherical photos LT_LAI = LAI from the Littertraps (leafarea.py script) DHP_LAI_2BG = LAI from hemispherical photos with enhanced contrast such as suggested in the
-
-
 ```{r setting up R Workspace}
 library(lme4)
 library(MuMIn)
@@ -391,11 +388,11 @@ zenith_radii <- sapply(zenith_angles, function(angle) {
 })
 
 # Load and rotate the first image
-fisheye_image1 <- image_read('/Volumes/Back 3/Ecosense_Art/LT23_20240920.jpg')
+fisheye_image1 <- image_read('data/Figures_data/LT23_20240920.jpg')
 image_grob1 <- grid::rasterGrob(fisheye_image1, width = unit(1, "npc"), height = unit(1, "npc"))
 
 # Load and rotate the second image by 180 degrees
-fisheye_image2 <- image_read('/Volumes/Back 3/Ecosense_Art/LT23_20241216.jpg') %>%
+fisheye_image2 <- image_read('data/Figures_data/LT23_20241216.jpg') %>%
   image_rotate(180)  # Rotate the image by 180 degrees
 image_grob2 <- grid::rasterGrob(fisheye_image2, width = unit(1, "npc"), height = unit(1, "npc"))
 
