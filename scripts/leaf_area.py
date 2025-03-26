@@ -319,7 +319,7 @@ def mask_image(image, mask):
     masked_image = image.copy()
     
     # Set the pixels where mask is True to black [0, 0, 0] in the original image
-    masked_image[mask] = [0, 0, 0]
+    masked_image[mask] = [255, 255, 255]
     
     return masked_image
 
