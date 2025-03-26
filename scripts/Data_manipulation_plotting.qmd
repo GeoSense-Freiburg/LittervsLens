@@ -144,13 +144,55 @@ merged_data_cumulative_woconifer_phase <- merged_data_cumulative %>%
   filter(phase == c("onset", "peak"))
 ```
 
+```{r get rid of woody components}
+
+# Your list of plot_ids_wo_conifer
+plot_ids_wo_conifer <- c("LT11", "LT13", "LT14", "LT23", "LT24",
+                         "LT33", "LT41", "LT44", "LT34", 
+                         "LT51", "LT52", "LT53", "LT61", "LT62", "LT63")
+
+# Get all unique endVZAs
+endvza_values <- unique(merged_data_cumulative$endVZA)
+
+# Loop through each unique endVZA
+for (endvza_value in endvza_values) {
+  
+  # Loop through each row where absolute_lai == 0 for the current endVZA and plots in plot_ids_wo_conifer
+  for (i in which(merged_data_cumulative$absolute_lai == 0 & 
+                  merged_data_cumulative$endVZA == endvza_value & 
+                  merged_data_cumulative$plot %in% plot_ids_wo_conifer)) {
+    
+    # Get the values for this row where absolute_lai == 0
+    plot_value <- merged_data_cumulative$plot[i]
+    
+    # Get the LAI values to subtract
+    LAI_LX_value <- merged_data_cumulative$LAI.LX[i]
+    LAI_LXG1_value <- merged_data_cumulative$LAI.LXG1[i]
+    LAI_LXG2_value <- merged_data_cumulative$LAI.LXG2[i]
+    canopy.Le_value <- merged_data_cumulative$canopy.Le[i]
+    
+    # Subtract these values from all other rows with the same plot and endVZA
+    merged_data_cumulative <- merged_data_cumulative %>%
+      mutate(
+        canopy.Le = ifelse(plot == plot_value & endVZA == endvza_value, canopy.Le - canopy.Le_value, canopy.Le),
+        LAI.LX = ifelse(plot == plot_value & endVZA == endvza_value, LAI.LX - LAI_LX_value, LAI.LX),
+        LAI.LXG1 = ifelse(plot == plot_value & endVZA == endvza_value, LAI.LXG1 - LAI_LXG1_value, LAI.LXG1),
+        LAI.LXG2 = ifelse(plot == plot_value & endVZA == endvza_value, LAI.LXG2 - LAI_LXG2_value, LAI.LXG2)
+      )
+  }
+}
+
+# View the updated dataset
+head(merged_data_cumulative)
+
+```
 
 ## RESULTS
  
 ### Plots
 
 ```{r LAI OVER TIME}
-# Filter data for LAI.LXG1 at 20° only and only sample points wo conifer trees
+# Filter data for LAI.LXG1 at 20° only
 filtered_data <- merged_data_cumulative %>%
   filter(endVZA == 20) %>%
   filter(plot %in% plot_ids_wo_conifer)
@@ -159,31 +201,37 @@ filtered_data <- merged_data_cumulative %>%
 summary_data <- filtered_data %>%
   group_by(date) %>%
   summarise(
-    mean_actual_LAI = mean(absolute_lai, na.rm = TRUE),
-    p5_actual_LAI = quantile(absolute_lai, 0.05, na.rm = TRUE),
-    p95_actual_LAI = quantile(absolute_lai, 0.95, na.rm = TRUE),
-    mean_LAI_LXG1 = mean(LAI.LXG1, na.rm = TRUE),
-    p5_LAI_LXG1 = quantile(LAI.LXG1, 0.05, na.rm = TRUE),
-    p95_LAI_LXG1 = quantile(LAI.LXG1, 0.95, na.rm = TRUE)
+    mean_LT_LAI = mean(absolute_lai, na.rm = TRUE),
+    p5_LT_LAI = quantile(absolute_lai, 0.05, na.rm = TRUE),
+    p95_LT_LAI = quantile(absolute_lai, 0.95, na.rm = TRUE),
+    mean_DHP_LAI = mean(LAI.LXG1, na.rm = TRUE),
+    p5_DHP_LAI = quantile(LAI.LXG1, 0.05, na.rm = TRUE),
+    p95_DHP_LAI = quantile(LAI.LXG1, 0.95, na.rm = TRUE)
   )
+
+# Identify breakpoints from segmented model
+breakpoints_numeric <- seg_model$psi[, 2]
+origin_date <- min(summary_data$date)
+breakpoints_date <- origin_date + breakpoints_numeric
 
 # Create the plot
 p <- ggplot(summary_data, aes(x = date)) +
-  # Shaded region for actual LAI 5th-95th percentile range
-  geom_ribbon(aes(ymin = p5_actual_LAI, ymax = p95_actual_LAI), fill = "black", alpha = 0.2) +
-  # Shaded region for LAI.LXG1 (20°) 5th-95th percentile range
-  geom_ribbon(aes(ymin = p5_LAI_LXG1, ymax = p95_LAI_LXG1), fill = "#1F77B4", alpha = 0.2) +
-  # Line for mean actual LAI
-  geom_line(aes(y = mean_actual_LAI, color = "Mean Actual LAI"), size = 1.2, linetype = "solid") +
-  # Line for mean LAI.LXG1 (20°)
-  geom_line(aes(y = mean_LAI_LXG1, color = "Mean LAI.LXG1"), size = 1, linetype = "solid") +  # Adjusted label
+  # Shaded region for LT LAI 5th-95th percentile range
+  geom_ribbon(aes(ymin = p5_LT_LAI, ymax = p95_LT_LAI), fill = "black", alpha = 0.2) +
+  # Shaded region for DHP LAI 5th-95th percentile range
+  geom_ribbon(aes(ymin = p5_DHP_LAI, ymax = p95_DHP_LAI), fill = "#1F77B4", alpha = 0.2) +
+  # Line for mean LT LAI
+  geom_line(aes(y = mean_LT_LAI, color = "Mean LT LAI"), size = 1.2, linetype = "solid") +
+  # Line for mean DHP LAI
+  geom_line(aes(y = mean_DHP_LAI, color = "Mean DHP LAI"), size = 1, linetype = "solid") +
+  # Add breakpoints as dashed vertical lines
+  geom_vline(xintercept = breakpoints_date, color = "black", linetype = "dashed") +
   labs(
-    # title = "LAI Over Time: Actual vs. Estimated (LXG1, 20°)",
     x = "Date", 
     y = "LAI",
     color = NULL  # Remove legend title
   ) +
-  scale_color_manual(values = c("Mean Actual LAI" = "black", "Mean LAI.LXG1" = "#1F77B4")) +  # Adjusted color entry
+  scale_color_manual(values = c("Mean LT LAI" = "black", "Mean DHP LAI" = "#1F77B4")) +
   theme_minimal() +
   theme(text = element_text(family = "Helvetica", size = 25),  # Set font to Helvetica
     plot.title = element_text(size = 25, face = "bold"),  # Increase title size
