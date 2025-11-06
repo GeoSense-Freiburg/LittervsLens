@@ -7,19 +7,23 @@ Leaf Area Index (LAI) is a crucial parameter for modeling ecosystem productivity
 ```bash
 LittervsLens/
 │── data/              # Raw and processed data
-│   ├── DHP/           # Digital Hemispherical Photography images, structured by LT
-│   ├── Figures_data/  # Processed DHP images for figures
-│   ├── LT_raw/        # Leaf images from litter traps, structured by date
-│   ├── LT_masked/     # Litter trap images with masked leaves
+│   ├── all/           # Digital Hemispherical Photography images, structured by LT
+│   ├── hemi_photo_cropped/  #cropped DHP images for figures
+│   ├── LT_data/      
+│       ├── LT_raw/        # Leaf images from litter traps, structured by date
+│       ├── LT_masked/     # Litter trap images with masked leaves
 │
 │── results/           # Processed data outputs
-│   ├── DHP_VZA.csv    # CSV with DHP data for all VZA ranges
-│   ├── DHP_Hinge.csv  # CSV with DHP data using the Hinge method
-│
+│   ├── DHP_processed_Hinge.csv  # CSV with DHP data using the Hinge method
+│   ├── LAI_results_gapfrac.csv  #gapfrac data
+│   ├── LAI_results_wood_removal_full.csv   #wood removal LAI data with joined LT data
+│   ├── LAI_results_wood_removal.csv        #wood removal data LAI
+│   ├── LAI_results.csv                     #Raw DHP results
+│   ├── LT_results.csv                      #Raw LT results
+│   
 │── scripts/           # Code for data analysis and visualization
-│   ├── leaf_area.py  # Python script for leaf area calculation
-│   ├── HemispheR_process.qmd  # Data manipulation & plotting for DHP data
-│   ├── Data_manipulation_plotting.qmd # R script for processing DHP data
+│   ├── data_processing  # processing scripts 
+│   ├── figures  # scripts for figures creation
 │
 │── README.md          # Project documentation
 ```

@@ -1,0 +1,58 @@
+# LittervsLens Project Dependencies
+# =================================
+
+## R Version Requirement
+R >= 4.0.0
+
+## Required R Packages
+# ---------------------
+
+### Core Data Processing
+dplyr           # Data manipulation and transformation
+parallel        # Multi-core processing for image analysis
+stringr         # String manipulation for file names
+readr           # Fast reading of CSV files
+
+### Image Processing & LAI Analysis
+hemispheR       # Main package for hemispherical photo analysis and LAI calculation
+imager          # Image processing and manipulation
+jpeg            # Reading JPEG image files
+png             # Reading PNG image files (alternative to jpeg)
+
+### Statistical Analysis
+lme4            # Linear mixed-effects models (GLMM)
+MuMIn           # Model selection and R-squared calculations
+segmented       # Breakpoint/changepoint analysis for time series
+
+### Data Visualization
+ggplot2         # Main plotting package
+gridExtra       # Arranging multiple plots
+grid            # Low-level graphics functions
+patchwork       # Combining plots elegantly
+cowplot         # Publication-ready plots
+ggforce         # Additional ggplot2 extensions (for circles, etc.)
+viridis         # Colorblind-friendly color palettes
+tidyr           # Data reshaping for plotting
+
+### Optional Dependencies
+magick          # Alternative image processing (if imager fails)
+EBImage         # Bioconductor image processing (alternative)
+
+## Installation Commands for R
+# ----------------------------
+# Run these commands in R console:
+
+# Install CRAN packages
+install.packages(c(
+  "dplyr", "parallel", "stringr", "readr",
+  "hemispheR", "imager", "jpeg", "png", 
+  "lme4", "MuMIn", "segmented",
+  "ggplot2", "gridExtra", "grid", "patchwork", 
+  "cowplot", "ggforce", "viridis", "tidyr"
+))
+
+## Notes
+# -----
+- The script uses parallel processing - adjust num_cores based on your system 
+if there are no multiple cores accessible use num_cores = 1
+
